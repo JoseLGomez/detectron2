@@ -49,8 +49,25 @@ def _get_cityscapes_files(image_dir, gt_dir):
         assert PathManager.isfile(f), f
     return files
 
+def _get_cityscapes_files_from_filelist(image_dir, gt_dir):
+    files = []
+    with open(image_dir,'r') as f:
+        images = [line.rstrip().split(' ') for line in f.readlines()]
+    with open(gt_dir,'r') as f:
+        labels = [line.rstrip().split(' ') for line in f.readlines()]
+    for idx, image in enumerate(images):
+        label_file = labels[idx]
+        label_dir = ('/').join(label_file.split('/')[:-1])
+        labels_name = label_file.split('/')[-1]
+        basename = ('_').join(label_file.split('_')[:3])
+        label_file = os.path.join(label_dir, basename + "_gtFine_labelIds.png")
+        instance_file = os.path.join(label_dir, basename + "_gtFine_instanceIds.png") 
+        json_file = os.path.join(label_dir, basename + "_gtFine_polygons.json")
+        files.append((image, instance_file, label_file, json_file))
+    return files
 
-def load_cityscapes_instances(image_dir, gt_dir, from_json=True, to_polygons=True):
+
+def load_cityscapes_instances(image_dir, gt_dir, from_file_list=False, from_json=True, to_polygons=True):
     """
     Args:
         image_dir (str): path to the raw dataset. e.g., "~/cityscapes/leftImg8bit/train".
@@ -68,7 +85,10 @@ def load_cityscapes_instances(image_dir, gt_dir, from_json=True, to_polygons=Tru
             "Cityscapes's json annotations are in polygon format. "
             "Converting to mask format is not supported now."
         )
-    files = _get_cityscapes_files(image_dir, gt_dir)
+    if from_file_list:
+        files = _get_cityscapes_files_from_filelist(image_dir, gt_dir)
+    else:
+        files = _get_cityscapes_files(image_dir, gt_dir)
 
     logger.info("Preprocessing cityscapes annotations ...")
     # This is still not fast: all workers will execute duplicate works and will
@@ -92,7 +112,7 @@ def load_cityscapes_instances(image_dir, gt_dir, from_json=True, to_polygons=Tru
     return ret
 
 
-def load_cityscapes_semantic(image_dir, gt_dir):
+def load_cityscapes_semantic(image_dir, gt_dir, from_file_list=False):
     """
     Args:
         image_dir (str): path to the raw dataset. e.g., "~/cityscapes/leftImg8bit/train".
@@ -105,7 +125,11 @@ def load_cityscapes_semantic(image_dir, gt_dir):
     ret = []
     # gt_dir is small and contain many small files. make sense to fetch to local first
     gt_dir = PathManager.get_local_path(gt_dir)
-    for image_file, _, label_file, json_file in _get_cityscapes_files(image_dir, gt_dir):
+    if from_file_list:
+        files = _get_cityscapes_files_from_filelist(image_dir, gt_dir)
+    else:
+        files = _get_cityscapes_files(image_dir, gt_dir)
+    for image_file, _, label_file, json_file in files:
         label_file = label_file.replace("labelIds", "labelTrainIds")
 
         with PathManager.open(json_file, "r") as f:

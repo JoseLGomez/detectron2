@@ -1,0 +1,34 @@
+_BASE_: "../Base-RCNN-FPN.yaml"
+MODEL:
+  META_ARCHITECTURE: "SemanticSegmentor"
+  WEIGHTS: "detectron2://ImageNetPretrained/MSRA/R-50.pkl"
+  RESNETS:
+    DEPTH: 50
+  SEM_SEG_HEAD:
+    IGNORE_VALUE: 255
+    NUM_CLASSES: 20
+DATASETS:
+  TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_train.txt
+  TRAIN_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_train.txt
+  TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_val.txt
+  TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
+  LABELS: "cityscapes"
+  TRAIN_NAME: "cityscapes"
+  TEST_NAME: "cityscapes_val"
+PSEUDOLABELING: 
+  NUMBER: 100 # number of pseudolabels that will be added to the source dataset
+  MODE: "cbst"
+  COLLABORATION: "none"
+  ACCUMULATION: "all"
+INPUT:
+  MIN_SIZE_TRAIN: (640, 672, 704, 736, 768, 800)
+  RANDOM_FLIP: "horizontal"
+  FLIP_PROB: 1.0
+SOLVER:
+  IMS_PER_BATCH: 1
+  BASE_LR: 0.002
+  STEPS: (60000, 80000)
+  MAX_ITER: 20
+TEST:
+  EVAL_PERIOD: 20000
+OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/testing

@@ -28,6 +28,27 @@ from .coco import load_sem_seg, register_coco_instances
 from .coco_panoptic import register_coco_panoptic, register_coco_panoptic_separated
 from .lvis import get_lvis_instances_meta, register_lvis_instances
 from .pascal_voc import register_pascal_voc
+from .kitti import register_kitti_instances
+
+
+# ==== Predefined datasets and splits for KITTI ==========
+_PREDEFINED_SPLITS_KITTI = {}
+_PREDEFINED_SPLITS_KITTI["kitti"] = {
+    "kitti_train": ("kitti", "/datatmp/Datasets/detection/kitti/train_splitted_rgb.txt"),
+    "kitti_val": ("kitti", "/datatmp/Datasets/detection/kitti/valid_splitted_rgb.txt"),
+}
+
+def register_all_kitti(root):
+    for dataset_name, splits_per_dataset in _PREDEFINED_SPLITS_KITTI.items():
+        for key, (image_root, json_file) in splits_per_dataset.items():
+            # Assume pre-defined datasets live in `./datasets`.
+            register_kitti_instances(
+                key,
+                _get_builtin_metadata(dataset_name),
+                os.path.join(root, json_file) if "://" not in json_file else json_file,
+                os.path.join(root, image_root),
+            )
+
 
 # ==== Predefined datasets and splits for COCO ==========
 
@@ -180,10 +201,15 @@ def register_all_lvis(root):
 
 # ==== Predefined splits for raw cityscapes images ===========
 _RAW_CITYSCAPES_SPLITS = {
-    "cityscapes_fine_{task}_train": ("cityscapes/leftImg8bit/train/", "cityscapes/gtFine/train/"),
-    "cityscapes_fine_{task}_val": ("cityscapes/leftImg8bit/val/", "cityscapes/gtFine/val/"),
-    "cityscapes_fine_{task}_test": ("cityscapes/leftImg8bit/test/", "cityscapes/gtFine/test/"),
+    "cityscapes_fine_{task}_train": ("/datatmp/Datasets/segmentation/cityscapes/Original/leftImg8bit/train/", "/datatmp/Datasets/segmentation/cityscapes/Original/gtFine/train/"),
+    "cityscapes_fine_{task}_val": ("/datatmp/Datasets/segmentation/cityscapes/Original/leftImg8bit/val/", "/datatmp/Datasets/segmentation/cityscapes/Original/gtFine/val/"),
+    "cityscapes_fine_{task}_test": ("/datatmp/Datasets/segmentation/cityscapes/Original/leftImg8bit/test/", "/datatmp/Datasets/segmentation/cityscapes/Original/gtFine/test/"),
 }
+'''_RAW_CITYSCAPES_SPLITS = {
+    "cityscapes_fine_{task}_train": ("/datatmp/Datasets/segmentation/cityscapes/leftImg8bit_trainvaltest/leftImg8bit/train/", "/datatmp/Datasets/segmentation/cityscapes/gtFine_trainvaltest/gtFine/train/"),
+    "cityscapes_fine_{task}_val": ("/datatmp/Datasets/segmentation/cityscapes/leftImg8bit_trainvaltest/leftImg8bit/val/", "/datatmp/Datasets/segmentation/cityscapes/gtFine_trainvaltest/gtFine/val/"),
+    "cityscapes_fine_{task}_test": ("/datatmp/Datasets/segmentation/cityscapes/leftImg8bit_trainvaltest/leftImg8bit/test/", "/datatmp/Datasets/segmentation/cityscapes/gtFine_trainvaltest/gtFine/test/"),
+}'''
 
 
 def register_all_cityscapes(root):
@@ -247,7 +273,6 @@ def register_all_ade20k(root):
             image_root=image_dir,
             sem_seg_root=gt_dir,
             evaluator_type="sem_seg",
-            ignore_label=255,
         )
 
 
@@ -256,6 +281,7 @@ def register_all_ade20k(root):
 if __name__.endswith(".builtin"):
     # Assume pre-defined datasets live in `./datasets`.
     _root = os.getenv("DETECTRON2_DATASETS", "datasets")
+    register_all_kitti(_root)
     register_all_coco(_root)
     register_all_lvis(_root)
     register_all_cityscapes(_root)

@@ -61,6 +61,8 @@ _C.INPUT.MAX_SIZE_TEST = 1333
 # choose one of ["horizontal, "vertical", "none"]
 _C.INPUT.RANDOM_FLIP = "horizontal"
 
+_C.INPUT.FLIP_PROB = None
+
 # `True` if cropping is used for data augmentation during training
 _C.INPUT.CROP = CN({"ENABLED": False})
 # Cropping type. See documentation of `detectron2.data.transforms.RandomCrop` for explanation.
@@ -100,6 +102,14 @@ _C.DATASETS.TEST = ()
 _C.DATASETS.PROPOSAL_FILES_TEST = ()
 # Number of top scoring precomputed proposals to keep for test
 _C.DATASETS.PRECOMPUTED_PROPOSAL_TOPK_TEST = 1000
+# Custom dataset for semantic segmentation from txt file
+_C.DATASETS.TRAIN_IMG_TXT = None
+_C.DATASETS.TEST_IMG_TXT = None
+_C.DATASETS.TRAIN_GT_TXT = None
+_C.DATASETS.TEST_GT_TXT = None
+_C.DATASETS.TRAIN_NAME = "custom"
+_C.DATASETS.TEST_NAME = "custom"
+_C.DATASETS.LABELS = None
 
 # -----------------------------------------------------------------------------
 # DataLoader
@@ -235,8 +245,6 @@ _C.MODEL.RPN.POST_NMS_TOPK_TRAIN = 2000
 _C.MODEL.RPN.POST_NMS_TOPK_TEST = 1000
 # NMS threshold used on RPN proposals
 _C.MODEL.RPN.NMS_THRESH = 0.7
-# Set this to -1 to use the same number of output channels as input channels.
-_C.MODEL.RPN.CONV_DIMS = [-1]
 
 # ---------------------------------------------------------------------------- #
 # ROI HEADS options
@@ -626,3 +634,9 @@ _C.VIS_PERIOD = 0
 # Do not commit any configs into it.
 _C.GLOBAL = CN()
 _C.GLOBAL.HACK = 1.0
+
+_C.PSEUDOLABELING = CN()
+_C.PSEUDOLABELING.MODE = None
+_C.PSEUDOLABELING.COLLABORATION = None
+_C.PSEUDOLABELING.NUMBER = None
+_C.PSEUDOLABELING.ACCUMULATION = None

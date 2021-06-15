@@ -85,20 +85,43 @@ class SemSegEvaluator(DatasetEvaluator):
                 (Tensor [H, W]) or list of dicts with key "sem_seg" that contains semantic
                 segmentation prediction in the same format.
         """
+        from cityscapesscripts.helpers.labels import trainId2label
+        pred_output = os.path.join(self._output_dir, 'predictions')
+        if not os.path.exists(pred_output):
+            os.makedirs(pred_output)
+        pred_colour_output = os.path.join(self._output_dir, 'colour_predictions')
+        if not os.path.exists(pred_colour_output):
+            os.makedirs(pred_colour_output)
         for input, output in zip(inputs, outputs):
             output = output["sem_seg"].argmax(dim=0).to(self._cpu_device)
-            pred = np.array(output, dtype=np.int)
+            pred = np.array(output, dtype=np.uint8)
+            pred64 = np.array(output, dtype=np.int64) # to use it on bitcount for xonf matrix
             with PathManager.open(self.input_file_to_gt_file[input["file_name"]], "rb") as f:
-                gt = np.array(Image.open(f), dtype=np.int)
+                gt = np.array(Image.open(f), dtype=np.int64)
 
             gt[gt == self._ignore_label] = self._num_classes
-
             self._conf_matrix += np.bincount(
-                (self._num_classes + 1) * pred.reshape(-1) + gt.reshape(-1),
+                (self._num_classes + 1) * pred64.reshape(-1) + gt.reshape(-1),
                 minlength=self._conf_matrix.size,
             ).reshape(self._conf_matrix.shape)
+            file_name = input["file_name"]
+            basename = os.path.splitext(os.path.basename(file_name))[0]
+            pred_filename = os.path.join(pred_output, basename + '.png')
+            Image.fromarray(pred).save(pred_filename)
+            # colour prediction
+            output = output.numpy()
+            pred_colour_filename = os.path.join(pred_colour_output, basename + '.png')
+            pred_colour = 255 * np.ones([output.shape[0],output.shape[1],3], dtype=np.uint8)
+            for train_id, label in trainId2label.items():
+                #if label.ignoreInEval:
+                #    continue
+                #pred_colour[np.broadcast_to(output == train_id, pred_colour.shape)] = 0 #label.color
+                pred_colour[(output == train_id),0] = label.color[0]
+                pred_colour[(output == train_id),1] = label.color[1]
+                pred_colour[(output == train_id),2] = label.color[2]
+            Image.fromarray(pred_colour).save(pred_colour_filename)
+            #self._predictions.extend(self.encode_json_sem_seg(pred, input["file_name"]))
 
-            self._predictions.extend(self.encode_json_sem_seg(pred, input["file_name"]))
 
     def evaluate(self):
         """
@@ -121,11 +144,11 @@ class SemSegEvaluator(DatasetEvaluator):
             for conf_matrix in conf_matrix_list:
                 self._conf_matrix += conf_matrix
 
-        if self._output_dir:
+        '''if self._output_dir:
             PathManager.mkdirs(self._output_dir)
             file_path = os.path.join(self._output_dir, "sem_seg_predictions.json")
             with PathManager.open(file_path, "w") as f:
-                f.write(json.dumps(self._predictions))
+                f.write(json.dumps(self._predictions))'''
 
         acc = np.full(self._num_classes, np.nan, dtype=np.float)
         iou = np.full(self._num_classes, np.nan, dtype=np.float)
@@ -153,10 +176,10 @@ class SemSegEvaluator(DatasetEvaluator):
         for i, name in enumerate(self._class_names):
             res["ACC-{}".format(name)] = 100 * acc[i]
 
-        if self._output_dir:
+        '''if self._output_dir:
             file_path = os.path.join(self._output_dir, "sem_seg_evaluation.pth")
             with PathManager.open(file_path, "wb") as f:
-                torch.save(res, f)
+                torch.save(res, f)'''
         results = OrderedDict({"sem_seg": res})
         self._logger.info(results)
         return results
