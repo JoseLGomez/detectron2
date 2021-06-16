@@ -4,6 +4,7 @@ from fvcore.transforms.transform import *
 from .transform import *
 from .augmentation import *
 from .augmentation_impl import *
+from .sem_seg_augmentations import *
 
 __all__ = [k for k in globals().keys() if not k.startswith("_")]
 

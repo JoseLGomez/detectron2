@@ -83,6 +83,7 @@ _C.INPUT.FORMAT = "BGR"
 _C.INPUT.MASK_FORMAT = "polygon"  # alternative: "bitmask"
 
 
+
 # -----------------------------------------------------------------------------
 # Dataset
 # -----------------------------------------------------------------------------
@@ -640,3 +641,9 @@ _C.PSEUDOLABELING.MODE = None
 _C.PSEUDOLABELING.COLLABORATION = None
 _C.PSEUDOLABELING.NUMBER = None
 _C.PSEUDOLABELING.ACCUMULATION = None
+
+# Apply CutOut technique in sematic segmentation
+_C.AUGMENTATION = CN()
+_C.AUGMENTATION.CUTOUT = False
+_C.AUGMENTATION.CUTOUT_N_HOLES = 1
+_C.AUGMENTATION.CUTOUT_LENGTH = 100

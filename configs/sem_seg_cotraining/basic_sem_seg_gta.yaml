@@ -18,11 +18,15 @@ INPUT:
   RANDOM_FLIP: "horizontal"
   FLIP_PROB: 1.0
 SOLVER:
-  IMS_PER_BATCH: 16
+  IMS_PER_BATCH: 1
   BASE_LR: 0.002
   STEPS: (60000, 80000)
   MAX_ITER: 90000
 TEST:
   EVAL_PERIOD: 20000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_res50
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_res50_cutout
+AUGMENTATION:
+  CUTOUT: True
+  CUTOUT_N_HOLES: 2
+  CUTOUT_LENGTH: 350
  

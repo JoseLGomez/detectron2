@@ -49,7 +49,6 @@ class CfgNode(_CfgNode):
         assert loaded_ver <= self.VERSION, "Cannot merge a v{} config into a v{} config.".format(
             loaded_ver, self.VERSION
         )
-
         if loaded_ver == self.VERSION:
             self.merge_from_other_cfg(loaded_cfg)
         else:
