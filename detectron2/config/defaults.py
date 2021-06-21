@@ -58,10 +58,6 @@ _C.INPUT.MIN_SIZE_TEST = 800
 # Maximum size of the side of the image during testing
 _C.INPUT.MAX_SIZE_TEST = 1333
 # Mode for flipping images used in data augmentation during training
-# choose one of ["horizontal, "vertical", "none"]
-_C.INPUT.RANDOM_FLIP = "horizontal"
-
-_C.INPUT.FLIP_PROB = None
 
 # `True` if cropping is used for data augmentation during training
 _C.INPUT.CROP = CN({"ENABLED": False})
@@ -642,8 +638,47 @@ _C.PSEUDOLABELING.COLLABORATION = None
 _C.PSEUDOLABELING.NUMBER = None
 _C.PSEUDOLABELING.ACCUMULATION = None
 
-# Apply CutOut technique in sematic segmentation
+# data aumentation policies
 _C.AUGMENTATION = CN()
+# Apply CutOut technique in sematic segmentation
 _C.AUGMENTATION.CUTOUT = False
-_C.AUGMENTATION.CUTOUT_N_HOLES = 1
-_C.AUGMENTATION.CUTOUT_LENGTH = 100
+_C.AUGMENTATION.CUTOUT_N_HOLES = (0, 4)
+_C.AUGMENTATION.CUTOUT_LENGTH = (100, 200)
+# Apply horitzontal flip (HFLIP) and vertical flip (VFLIP) as desired
+_C.AUGMENTATION.HFLIP = False
+_C.AUGMENTATION.HFLIP_PROB = 0.5
+_C.AUGMENTATION.VFLIP = False
+_C.AUGMENTATION.VFLIP_PROB = 0.5
+# Apply random resize to the image (zooming)
+_C.AUGMENTATION.RANDOM_RESIZE = False
+_C.AUGMENTATION.RESIZE_RANGE = (0.5, 1.5)
+
+# data aumentation policies cotraining model A
+_C.AUGMENTATION_A = CN()
+# Apply CutOut technique in sematic segmentation
+_C.AUGMENTATION_A.CUTOUT = False
+_C.AUGMENTATION_A.CUTOUT_N_HOLES = (0, 4)
+_C.AUGMENTATION_A.CUTOUT_LENGTH = (100, 200)
+# Apply horitzontal flip (HFLIP) and vertical flip (VFLIP) as desired
+_C.AUGMENTATION_A.HFLIP = False
+_C.AUGMENTATION_A.HFLIP_PROB = 0.5
+_C.AUGMENTATION_A.VFLIP = False
+_C.AUGMENTATION_A.VFLIP_PROB = 0.5
+# Apply random resize to the image (zooming)
+_C.AUGMENTATION_A.RANDOM_RESIZE = False
+_C.AUGMENTATION_A.RESIZE_RANGE = (0.5, 1.5)
+
+# data aumentation policies cotraining model B
+_C.AUGMENTATION_B = CN()
+# Apply CutOut technique in sematic segmentation
+_C.AUGMENTATION_B.CUTOUT = False
+_C.AUGMENTATION_B.CUTOUT_N_HOLES = (0, 4)
+_C.AUGMENTATION_B.CUTOUT_LENGTH = (100, 200)
+# Apply horitzontal flip (HFLIP) and vertical flip (VFLIP) as desired
+_C.AUGMENTATION_B.HFLIP = False
+_C.AUGMENTATION_B.HFLIP_PROB = 0.5
+_C.AUGMENTATION_B.VFLIP = False
+_C.AUGMENTATION_B.VFLIP_PROB = 0.5
+# Apply random resize to the image (zooming)
+_C.AUGMENTATION_B.RANDOM_RESIZE = False
+_C.AUGMENTATION_B.RESIZE_RANGE = (0.5, 1.5)

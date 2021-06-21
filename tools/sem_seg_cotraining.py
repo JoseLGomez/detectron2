@@ -31,6 +31,7 @@ import time
 import math
 import PIL.Image as Image
 import datetime
+import itertools
 
 import detectron2.data.transforms as T
 import detectron2.utils.comm as comm
@@ -47,7 +48,6 @@ from detectron2.evaluation import (
     CityscapesInstanceEvaluator,
     CityscapesSemSegEvaluator,
     COCOEvaluator,
-    KITTIEvaluator,
     COCOPanopticEvaluator,
     DatasetEvaluators,
     LVISEvaluator,
@@ -152,9 +152,9 @@ def cotraining_argument_parser(parser):
         type=int
     )
     parser.add_argument(
-        '--load_epoch',
-        dest='load_epoch',
-        help='Loading epoch',
+        '--continue_epoch',
+        dest='continue_epoch',
+        help='Continue co-training at the begining of the specified epoch',
         default=0,
         type=int
     )
@@ -163,11 +163,26 @@ def cotraining_argument_parser(parser):
         action='store_true'
     )
     parser.add_argument(
+        '--incremental_training',
+        help='Models are not reset in each epoch',
+        action='store_true'
+    )
+    parser.add_argument(
         '--fp_annot',
         action='store_true'
     )
     return parser
 
+def print_txt_format(results_dict, iter_name, epoch, output, model_id):
+    with open(os.path.join(output,'results.txt'),"a+") as f:
+        print('----- Epoch: %s iteration: %s Model: %s -----' % (epoch,iter_name,model_id))
+        f.write('----- Epoch: %s iteration: %s Model: %s -----' % (epoch,iter_name,model_id))
+        for k, v in results_dict['sem_seg'].items():
+            if 'IoU' in k:
+                print('%s: %.4f' % (k, v))
+                f.write('%s: %.4f \n' % (k, v))
+        print('\n')
+        f.write('\n')
 
 def built_custom_dataset(cfg, image_dir, gt_dir, dataset_name, add_pseudolabels=False, pseudo_img_dir=None, pseudo_dir=None):
     if add_pseudolabels and pseudo_img_dir is not None and pseudo_dir is not None:
@@ -203,11 +218,12 @@ def built_inference_dataset(cfg, im_list, dataset_name):
 
 def build_sem_seg_train_aug(cfg):
     augs = []
-    if cfg.INPUT.FLIP_PROB is not None:
-        if cfg.INPUT.RANDOM_FLIP == "horizontal":
-            augs.append(T.RandomFlip(prob=cfg.INPUT.FLIP_PROB, horizontal=True, vertical=False))
-        elif cfg.INPUT.RANDOM_FLIP == "vertical":
-            augs.append(T.RandomFlip(prob=cfg.INPUT.FLIP_PROB, horizontal=False, vertical=True))
+    if cfg['hflip']:
+        augs.append(T.RandomFlip(prob=cfg['hflip_prob'], horizontal=True, vertical=False))
+    if cfg['vflip']:
+        augs.append(T.RandomFlip(prob=cfg['vflip_prob'], horizontal=False, vertical=True))
+    if cfg['cutout']:
+        augs.append(T.CutOutPolicy(cfg['cutout_n_holes'], cfg['cutout_length']))
     return augs
 
 
@@ -248,10 +264,8 @@ def get_evaluator(cfg, dataset_name, output_folder=None):
         return PascalVOCDetectionEvaluator(dataset_name)
     if evaluator_type == "lvis":
         return LVISEvaluator(dataset_name, cfg, True, output_folder)
-    if evaluator_type == "kitti":
-        return KITTIEvaluator(dataset_name, cfg, output_folder)
     if evaluator_type == "generic_sem_seg":
-        return SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder)
+        return SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder, write_outputs=False)
     if len(evaluator_list) == 0:
         raise NotImplementedError(
             "no Evaluator for the dataset {} with the type {}".format(dataset_name, evaluator_type)
@@ -261,7 +275,7 @@ def get_evaluator(cfg, dataset_name, output_folder=None):
     return DatasetEvaluators(evaluator_list)
 
 
-def do_test_txt(cfg, model, dataset_name, step_iter):
+def do_test_txt(cfg, model, dataset_name, step_iter, epoch, model_id):
     results = OrderedDict()
     dataset: List[Dict] = DatasetCatalog.get(dataset_name)
     data_loader = build_detection_test_loader(cfg, dataset_name)
@@ -270,7 +284,7 @@ def do_test_txt(cfg, model, dataset_name, step_iter):
     )
     results_i = inference_on_dataset(model, data_loader, evaluator)
     results[dataset_name] = results_i
-    print_txt_format(results_i, step_iter, cfg.OUTPUT_DIR)
+    print_txt_format(results_i, step_iter, epoch, cfg.OUTPUT_DIR, model_id)
     '''if comm.is_main_process():
         logger.info("Evaluation results for {} in csv format:".format(dataset_name))
         print_csv_format(results_i)'''
@@ -340,29 +354,60 @@ def inference_on_imlist(cfg, model, weights, dataset_name):
     return outputs
 
 
-def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, resume=False):
+def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_id, save_checkpoints_path, epoch, continue_epoch, incremental_training=False, resume=False):
     model.train()
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
 
     checkpointer = DetectionCheckpointer(
-        model, cfg.OUTPUT_DIR, optimizer=optimizer, scheduler=scheduler
-    )
-
-    start_iter = (
-        checkpointer.resume_or_load(weights, resume=resume).get("iteration", -1) + 1
+        model, save_checkpoints_path, optimizer=optimizer, scheduler=scheduler
     )
     max_iter = cfg.SOLVER.MAX_ITER
+    if resume:
+        start_iter = (
+                checkpointer.resume_or_load(weights, resume=resume).get("iteration", -1) + 1
+            )
+    else:
+        if not incremental_training or continue_epoch == 0:
+            checkpointer.resume_or_load(weights)
+        elif incremental_training:
+            previous_save_checkpoints_path = save_checkpoints_path.split('/')
+            previous_save_checkpoints_path[-2] = str(continue_epoch - 1)
+            weights = os.path.join('/'.join(previous_save_checkpoints_path),'model_final.pth')
+            checkpointer.resume_or_load(weights)
+
+        start_iter = 0
 
     periodic_checkpointer = PeriodicCheckpointer(
-        checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD, max_iter=max_iter
-    )
+            checkpointer, cfg.SOLVER.CHECKPOINT_PERIOD, max_iter=max_iter
+        )
 
     writers = default_writers(cfg.OUTPUT_DIR, max_iter) if comm.is_main_process() else []
 
     #Data aug mapper
+    augmentations = {}
+    if model_id.lower() == 'a':
+        augmentations = {'cutout': cfg.AUGMENTATION_A.CUTOUT,
+                         'cutout_n_holes': cfg.AUGMENTATION_A.CUTOUT_N_HOLES,
+                         'cutout_length': cfg.AUGMENTATION_A.CUTOUT_LENGTH,
+                         'hflip': cfg.AUGMENTATION_A.HFLIP,
+                         'hflip_prob': cfg.AUGMENTATION_A.HFLIP_PROB,
+                         'vflip': cfg.AUGMENTATION_A.VFLIP,
+                         'vflip_prob': cfg.AUGMENTATION_A.VFLIP_PROB}
+    elif model_id.lower() == 'b':
+        augmentations = {'cutout': cfg.AUGMENTATION_B.CUTOUT,
+                         'cutout_n_holes': cfg.AUGMENTATION_B.CUTOUT_N_HOLES,
+                         'cutout_length': cfg.AUGMENTATION_B.CUTOUT_LENGTH,
+                         'hflip': cfg.AUGMENTATION_B.HFLIP,
+                         'hflip_prob': cfg.AUGMENTATION_B.HFLIP_PROB,
+                         'vflip': cfg.AUGMENTATION_B.VFLIP,
+                         'vflip_prob': cfg.AUGMENTATION_B.VFLIP_PROB}
+    else:
+        raise NotImplementedError('Unknown model id for data augmentation')
+
+    
     if "SemanticSegmentor" in cfg.MODEL.META_ARCHITECTURE:
-        mapper = DatasetMapper(cfg, is_train=True, augmentations=build_sem_seg_train_aug(cfg))
+        mapper = DatasetMapper(cfg, is_train=True, augmentations=build_sem_seg_train_aug(augmentations))
     else:
         mapper = None
 
@@ -396,9 +441,8 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, resume=
             if (
                 cfg.TEST.EVAL_PERIOD > 0
                 and (iteration + 1) % cfg.TEST.EVAL_PERIOD == 0
-                and iteration != max_iter - 1
             ):
-                do_test_txt(cfg, model, test_dataset_name, iteration+1)
+                do_test_txt(cfg, model, test_dataset_name, iteration+1, epoch, model_id)
                 # Compared to "train_net.py", the test results are not dumped to EventStorage
                 comm.synchronize()
 
@@ -521,23 +565,75 @@ def save_pseudolabels(images, pseudolabels, scores, pseudolabels_path, coloured_
                     f.write('%s %s\n' % (filename, str(scores[idx])))
                     g.write('%s\n' % (image[0]))
                     h.write('%s\n' % (os.path.join(pseudolabels_path,filename)))
-    return images_txt, psedolabels_txt
+    return images_txt, psedolabels_txt, filenames_and_scores
 
-def merge_txts_and_save(txt1, txt2, new_txt):
-    files = [txt1, txt2]
+def merge_txts_and_save(new_txt, txt1, txt2=None):
+    if txt2 is not None:
+        files = [txt1, txt2]
+    else:
+        files = [txt1]
     with open(new_txt, 'w') as f:
         for file in files:
             with open(file) as infile:
                 for line in infile:
                     f.write(line)
+    return new_txt
 
+def update_best_score_txts_and_save(accum_scores_txt, accum_images_txt, accum_labels_txt, new_scores_txt, 
+                                    new_images_txt, new_labels_txt, save_img_txt, save_labels_txt, save_scores_txt):
+    with open(accum_scores_txt,'r') as f:
+        accum_scores = [line.rstrip().split(' ') for line in f.readlines()]
+    with open(new_scores_txt,'r') as f:
+        new_scores_txt = [line.rstrip().split(' ') for line in f.readlines()]
+    with open(accum_images_txt,'r') as f:
+        accum_images = [line.rstrip().split(' ') for line in f.readlines()]
+    with open(new_images_txt,'r') as f:
+        new_images = [line.rstrip().split(' ') for line in f.readlines()]
+    with open(accum_labels_txt,'r') as f:
+        accum_labels = [line.rstrip().split(' ') for line in f.readlines()]
+    with open(new_labels_txt,'r') as f:
+        new_labels = [line.rstrip().split(' ') for line in f.readlines()]
+    ignore_list = []
+    # Check for repeated images
+    for idx, score in enumerate(new_scores_txt):
+        for idx2, score2 in enumerate(accum_scores):
+            if score[0] == score2[0]: 
+                if score[1] > score2[1]:
+                    # If we found the same image with better score we updated values in all the acumulated lists
+                    accum_scores[idx2][1] = score[1]
+                    accum_labels[idx2] = new_labels[idx]
+                # we store the index to do not add it again later
+                ignore_list.append(idx)
+                break
+    # add new images into the accumulated ones
+    for idx, score in enumerate(new_scores_txt):
+        if idx not in ignore_list:
+            accum_scores.append(score)
+            accum_labels.append(new_labels[idx])
+            accum_images.append(new_images[idx])
+    # save each data in its respective txt
+    new_img_dataset = open(save_img_txt,'w')
+    new_labels_dataset = open(save_labels_txt,'w')
+    new_scores_dataset = open(save_scores_txt,'w')
+    for idx, _ in enumerate(accum_scores):
+        new_img_dataset.write(accum_images[idx][0] + '\n')
+        new_labels_dataset.write(accum_labels[idx][0] + '\n')
+        new_scores_dataset.write(accum_scores[idx][0] + ' ' + accum_scores[idx][1] + '\n')
+    new_img_dataset.close()
+    new_labels_dataset.close()
+    new_scores_dataset.close()
+    return save_img_txt, save_labels_txt, save_scores_txt
+    
 
 def main(args):
     cfg = setup(args)
+    continue_epoch = args.continue_epoch 
     accumulated_selection_imgA = []
     accumulated_selection_pseudoA = []
     accumulated_selection_imgB = []
     accumulated_selection_pseudoB = []
+    accumulated_acores_A = []
+    accumulated_acores_B = []
     pseudolabeling = cfg.PSEUDOLABELING.MODE
     collaboration = cfg.PSEUDOLABELING.COLLABORATION
     accumulation_mode = cfg.PSEUDOLABELING.ACCUMULATION
@@ -549,7 +645,7 @@ def main(args):
     built_custom_dataset(cfg, cfg.DATASETS.TEST_IMG_TXT, cfg.DATASETS.TEST_GT_TXT, cfg.DATASETS.TEST_NAME)
 
     # Start co-training
-    for epoch in range(args.load_epoch,args.epochs):
+    for epoch in range(args.continue_epoch,args.epochs):
         logger.info("Starting training from iteration {}".format(epoch))
         # prepare unlabeled data
         logger.info("prepare unlabeled data")
@@ -600,10 +696,24 @@ def main(args):
         create_folder(pseudolabels_path_model_B)
         coloured_pseudolabels_path_model_B = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'pseudolabeling/coloured_pseudolabels')
         create_folder(coloured_pseudolabels_path_model_B)
-        dataset_A_path = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'dataset')
+        dataset_A_path = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'unlabeled_data_selected')
         create_folder(dataset_A_path)
-        dataset_B_path = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'dataset')
+        dataset_B_path = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'unlabeled_data_selected')
         create_folder(dataset_B_path)
+        checkpoints_A_path = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints')
+        create_folder(checkpoints_A_path)
+        checkpoints_B_path = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'checkpoints')
+        create_folder(checkpoints_B_path)
+
+        # Continue cotraining on the specified epoch
+        if continue_epoch > 0:
+            accumulated_selection_imgA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch-1),'unlabeled_data_selected/dataset_img.txt')
+            accumulated_selection_pseudoA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch-1),'unlabeled_data_selected/dataset_pseudolabels.txt')
+            accumulated_scores_A = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch-1),'unlabeled_data_selected/filenames_and_scores.txt')
+            accumulated_selection_imgB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/dataset_img.txt')
+            accumulated_selection_pseudoB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/dataset_pseudolabels.txt')
+            accumulated_scores_B = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/filenames_and_scores.txt')
+            continue_epoch = 0
 
         logger.info("Collaboration mode: {}".format(collaboration))        
         if collaboration.lower() == 'none': #Self-training for each branch
@@ -612,33 +722,67 @@ def main(args):
             scores_listB, pseudolabels_B, unlabeled_datasetB = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, unlabeled_datasetB),reverse=True)))
             # select candidates and save them to add them to the source data
             if len(unlabeled_datasetA) > cfg.PSEUDOLABELING.NUMBER:
-                images_txt_A, psedolabels_txt_A = save_pseudolabels(unlabeled_datasetA[:num_selected], pseudolabels_A[:num_selected], scores_listA[:num_selected], pseudolabels_path_model_A, coloured_pseudolabels_path_model_A)
-                images_txt_B, psedolabels_txt_B = save_pseudolabels(unlabeled_datasetB[:num_selected], pseudolabels_B[:num_selected], scores_listB[:num_selected], pseudolabels_path_model_B, coloured_pseudolabels_path_model_B)      
+                images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA[:num_selected], pseudolabels_A[:num_selected], scores_listA[:num_selected], pseudolabels_path_model_A, coloured_pseudolabels_path_model_A)
+                images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB[:num_selected], pseudolabels_B[:num_selected], scores_listB[:num_selected], pseudolabels_path_model_B, coloured_pseudolabels_path_model_B)      
             else:
-                images_txt_A, psedolabels_txt_A = save_pseudolabels(unlabeled_datasetA, pseudolabels_A, scores_listA, pseudolabels_path_model_A, coloured_pseudolabels_path_model_A)
-                images_txt_B, psedolabels_txt_B = save_pseudolabels(unlabeled_datasetB, pseudolabels_B, scores_listB, pseudolabels_path_model_B, coloured_pseudolabels_path_model_B)
+                images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA, pseudolabels_A, scores_listA, pseudolabels_path_model_A, coloured_pseudolabels_path_model_A)
+                images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB, pseudolabels_B, scores_listB, pseudolabels_path_model_B, coloured_pseudolabels_path_model_B)
         elif collaboration == 'cotraining':
-            pass
+            scores_listA, pseudolabels_A, unlabeled_datasetA = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, unlabeled_datasetA),reverse=False)))
+            scores_listB, pseudolabels_B, unlabeled_datasetB = (list(t) for t in zip(*sorted(zip(scores_listA, pseudolabels_A, unlabeled_datasetB),reverse=False)))
+            # select candidates and save them to add them to the source data
+            if len(unlabeled_datasetA) > cfg.PSEUDOLABELING.NUMBER:
+                images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA[:num_selected], pseudolabels_A[:num_selected], scores_listA[:num_selected], pseudolabels_path_model_A, coloured_pseudolabels_path_model_A)
+                images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB[:num_selected], pseudolabels_B[:num_selected], scores_listB[:num_selected], pseudolabels_path_model_B, coloured_pseudolabels_path_model_B)      
+            else:
+                images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA, pseudolabels_A, scores_listA, pseudolabels_path_model_A, coloured_pseudolabels_path_model_A)
+                images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB, pseudolabels_B, scores_listB, pseudolabels_path_model_B, coloured_pseudolabels_path_model_B)
+        
         else:
             raise Exception('unknown collaboration of models defined')
 
         # Compute data accumulation procedure
         if accumulation_mode is not None and len(accumulated_selection_imgA) > 0:
             if accumulation_mode.lower() == 'all':
-                accumulated_selection_imgA = merge_txts_and_save(accumulated_selection_imgA, images_txt_A, 
-                                                                            os.path.join(dataset_A_path,'dataset_img.txt'))
-                accumulated_selection_pseudoA = merge_txts_and_save(accumulated_selection_pseudoA, psedolabels_txt_A, 
-                                                                            os.path.join(dataset_A_path,'dataset_pseudolabels.txt'))
-                accumulated_selection_imgB = merge_txts_and_save(accumulated_selection_imgB, images_txt_B, 
-                                                                            os.path.join(dataset_B_path,'dataset_img.txt'))
-                accumulated_selection_pseudoB = merge_txts_and_save(accumulated_selection_pseudoB, psedolabels_txt_B, 
-                                                                            os.path.join(dataset_B_path,'dataset_pseudolabels.txt'))
+                accumulated_selection_imgA = merge_txts_and_save(os.path.join(dataset_A_path,'dataset_img.txt'),
+                                                                    accumulated_selection_imgA, images_txt_A)
+                accumulated_selection_pseudoA = merge_txts_and_save(os.path.join(dataset_A_path,'dataset_pseudolabels.txt'),
+                                                                    accumulated_selection_pseudoA, psedolabels_txt_A)
+                accumulated_scores_A = merge_txts_and_save(os.path.join(dataset_A_path,'filenames_and_scores.txt'),
+                                                                    accumulated_scores_A, filenames_and_scoresA)
+                accumulated_selection_imgB = merge_txts_and_save(os.path.join(dataset_B_path,'dataset_img.txt'), 
+                                                                    accumulated_selection_imgB, images_txt_B)
+                accumulated_selection_pseudoB = merge_txts_and_save(os.path.join(dataset_B_path,'dataset_pseudolabels.txt'), 
+                                                                    accumulated_selection_pseudoB, psedolabels_txt_B)
+                accumulated_scores_B = merge_txts_and_save(os.path.join(dataset_B_path,'filenames_and_scores.txt'), 
+                                                                    accumulated_scores_B, filenames_and_scoresB)
+            if accumulation_mode.lower() == 'update_best_score':
+                accumulated_selection_imgA, accumulated_selection_pseudoA, accumulated_scores_A = update_best_score_txts_and_save(
+                                                accumulated_scores_A, accumulated_selection_imgA, accumulated_selection_pseudoA, 
+                                                filenames_and_scoresA, images_txt_A, psedolabels_txt_A, 
+                                                os.path.join(dataset_A_path,'dataset_img.txt'), 
+                                                os.path.join(dataset_A_path,'dataset_pseudolabels.txt'),
+                                                os.path.join(dataset_A_path,'filenames_and_scores.txt'))
+                accumulated_selection_imgB, accumulated_selection_pseudoB, accumulated_scores_B = update_best_score_txts_and_save(
+                                                accumulated_scores_B, accumulated_selection_imgB, accumulated_selection_pseudoB, 
+                                                filenames_and_scoresB, images_txt_B, psedolabels_txt_B, 
+                                                os.path.join(dataset_B_path,'dataset_img.txt'), 
+                                                os.path.join(dataset_B_path,'dataset_pseudolabels.txt'),
+                                                os.path.join(dataset_B_path,'filenames_and_scores.txt'))
         else:
             #No accumulation, only training with new pseudolabels
-            accumulated_selection_imgA = images_txt_A
-            accumulated_selection_pseudoA = psedolabels_txt_A
-            accumulated_selection_imgB = images_txt_B
-            accumulated_selection_pseudoB = psedolabels_txt_B
+            accumulated_selection_imgA = merge_txts_and_save(os.path.join(dataset_A_path,'dataset_img.txt'),
+                                                                    images_txt_A)
+            accumulated_selection_pseudoA = merge_txts_and_save(os.path.join(dataset_A_path,'dataset_pseudolabels.txt'),
+                                                                    psedolabels_txt_A)
+            accumulated_scores_A = merge_txts_and_save(os.path.join(dataset_A_path,'filenames_and_scores.txt'),
+                                                                    filenames_and_scoresA)
+            accumulated_selection_imgB = merge_txts_and_save(os.path.join(dataset_B_path,'dataset_img.txt'), 
+                                                                    images_txt_B)
+            accumulated_selection_pseudoB = merge_txts_and_save(os.path.join(dataset_B_path,'dataset_pseudolabels.txt'), 
+                                                                    psedolabels_txt_B)
+            accumulated_scores_B = merge_txts_and_save(os.path.join(dataset_B_path,'filenames_and_scores.txt'),
+                                                                    filenames_and_scoresB)
 
 
         # create dataloader adding psedolabels to source dataset
@@ -647,7 +791,7 @@ def main(args):
                                                dataset_A_name, True, accumulated_selection_imgA, accumulated_selection_pseudoA)
         # Train model A
         logger.info("Training Model A")
-        do_train(cfg, model, args.weights_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME, resume=False)
+        do_train(cfg, model, args.weights_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, incremental_training=args.incremental_training, resume=False)
 
 
         # create dataloader adding psedolabels to source dataset
@@ -657,7 +801,7 @@ def main(args):
 
         # Train model B
         logger.info("Training Model B")
-        do_train(cfg, model, args.weights_branchB, dataset_B_name, cfg.DATASETS.TEST_NAME, resume=False)
+        do_train(cfg, model, args.weights_branchB, dataset_B_name, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, incremental_training=args.incremental_training, resume=False)
 
         # delete all datasets registered during epoch
         DatasetCatalog.remove(args.unlabeled_dataset_A_name)
@@ -669,22 +813,7 @@ def main(args):
         DatasetCatalog.remove(dataset_B_name)
         MetadataCatalog.remove(dataset_B_name)
 
-    '''
-    
-    if args.eval_only:
-        DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
-            cfg.MODEL.WEIGHTS, resume=args.resume
-        )
-        return do_test(cfg, model,'eval_only')
 
-    distributed = comm.get_world_size() > 1
-    if distributed:
-        model = DistributedDataParallel(
-            model, device_ids=[comm.get_local_rank()], broadcast_buffers=False
-        )
-
-    do_train(cfg, model, resume=args.resume)
-    return do_test(cfg, model, 'final')'''
 
 
 if __name__ == "__main__":

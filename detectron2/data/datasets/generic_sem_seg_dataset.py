@@ -27,6 +27,8 @@ def load_dataset_from_txt_and_merge(image_txt, image_txt2, gt_txt, gt_txt2):
     """ image_txt: txt file that contains the images with their respective absolute paths
         gt_txt: txt file that contains the gt with their respective absolute paths """
     dataset = []
+    print(image_txt)
+    print(image_txt2)
     image_files = _get_files_from_txt(image_txt) + _get_files_from_txt(image_txt2)
     gt_files = _get_files_from_txt(gt_txt) + _get_files_from_txt(gt_txt2)
 

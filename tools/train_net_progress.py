@@ -94,13 +94,14 @@ def built_custom_dataset(cfg, image_dir, gt_dir, split):
 
 def build_sem_seg_train_aug(cfg):
     augs = []
-    if cfg.INPUT.FLIP_PROB is not None:
-        if cfg.INPUT.RANDOM_FLIP == "horizontal":
-            augs.append(T.RandomFlip(prob=cfg.INPUT.FLIP_PROB, horizontal=True, vertical=False))
-        elif cfg.INPUT.RANDOM_FLIP == "vertical":
-            augs.append(T.RandomFlip(prob=cfg.INPUT.FLIP_PROB, horizontal=False, vertical=True))
+    if cfg.AUGMENTATION.HFLIP:
+        augs.append(T.RandomFlip(prob=cfg.AUGMENTATION.HFLIP_PROB, horizontal=True, vertical=False))
+    if cfg.AUGMENTATION.VFLIP:
+        augs.append(T.RandomFlip(prob=cfg.AUGMENTATION.VFLIP_PROB, horizontal=False, vertical=True))
     if cfg.AUGMENTATION.CUTOUT:
         augs.append(T.CutOutPolicy(cfg.AUGMENTATION.CUTOUT_N_HOLES, cfg.AUGMENTATION.CUTOUT_LENGTH))
+    if cfg.AUGMENTATION.RANDOM_RESIZE:
+        augs.append(T.TrainScalePolicy(cfg.AUGMENTATION.RESIZE_RANGE))
     return augs
 
 
@@ -221,12 +222,13 @@ def do_train(cfg, model, resume=False):
     logger.info("Starting training from iteration {}".format(start_iter))
     with EventStorage(start_iter) as storage:
         for data, iteration in zip(data_loader, range(start_iter, max_iter)):
-            #print(data[0]['file_name'])
-            #print('%s x %s' % (data[0]['height'], data[0]['width']))
             # debug data-aug
-            #print(data[0]['image'].cpu().numpy().transpose(1,2,0).shape)
-            #Image.fromarray(data[0]['image'].cpu().numpy().transpose(1,2,0).astype(np.uint8)).save(os.path.join(cfg.OUTPUT_DIR,'debug','image_%s.png' % iteration))
-            #Image.fromarray(data[0]['sem_seg'].cpu().numpy().astype(np.uint8)).save(os.path.join(cfg.OUTPUT_DIR,'debug','mask_%s.png' % iteration))
+            '''print(data[0]['image'].cpu().numpy().transpose(1,2,0).shape)
+            if not os.path.exists(os.path.join(cfg.OUTPUT_DIR,'debug')):
+                os.makedirs(os.path.join(cfg.OUTPUT_DIR,'debug'))
+            Image.fromarray(data[0]['image'].cpu().numpy().transpose(1,2,0).astype(np.uint8)).save(os.path.join(cfg.OUTPUT_DIR,'debug','image_%s.png' % iteration))
+            Image.fromarray(data[0]['sem_seg'].cpu().numpy().astype(np.uint8)).save(os.path.join(cfg.OUTPUT_DIR,'debug','mask_%s.png' % iteration))
+            exit(-1)'''
             storage.iter = iteration
             loss_dict = model(data)
             losses = sum(loss_dict.values())

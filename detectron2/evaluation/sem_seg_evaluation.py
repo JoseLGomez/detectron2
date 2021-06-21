@@ -21,15 +21,7 @@ class SemSegEvaluator(DatasetEvaluator):
     Evaluate semantic segmentation metrics.
     """
 
-    def __init__(
-        self,
-        dataset_name,
-        distributed=True,
-        output_dir=None,
-        *,
-        num_classes=None,
-        ignore_label=None,
-    ):
+    def __init__(self, dataset_name, distributed=True, output_dir=None, *, num_classes=None, ignore_label=None, write_outputs=False):
         """
         Args:
             dataset_name (str): name of the dataset to be evaluated.
@@ -50,6 +42,7 @@ class SemSegEvaluator(DatasetEvaluator):
         self._dataset_name = dataset_name
         self._distributed = distributed
         self._output_dir = output_dir
+        self._write_outputs = write_outputs
 
         self._cpu_device = torch.device("cpu")
 
@@ -104,23 +97,24 @@ class SemSegEvaluator(DatasetEvaluator):
                 (self._num_classes + 1) * pred64.reshape(-1) + gt.reshape(-1),
                 minlength=self._conf_matrix.size,
             ).reshape(self._conf_matrix.shape)
-            file_name = input["file_name"]
-            basename = os.path.splitext(os.path.basename(file_name))[0]
-            pred_filename = os.path.join(pred_output, basename + '.png')
-            Image.fromarray(pred).save(pred_filename)
-            # colour prediction
-            output = output.numpy()
-            pred_colour_filename = os.path.join(pred_colour_output, basename + '.png')
-            pred_colour = 255 * np.ones([output.shape[0],output.shape[1],3], dtype=np.uint8)
-            for train_id, label in trainId2label.items():
-                #if label.ignoreInEval:
-                #    continue
-                #pred_colour[np.broadcast_to(output == train_id, pred_colour.shape)] = 0 #label.color
-                pred_colour[(output == train_id),0] = label.color[0]
-                pred_colour[(output == train_id),1] = label.color[1]
-                pred_colour[(output == train_id),2] = label.color[2]
-            Image.fromarray(pred_colour).save(pred_colour_filename)
-            #self._predictions.extend(self.encode_json_sem_seg(pred, input["file_name"]))
+            if self._write_outputs:
+                file_name = input["file_name"]
+                basename = os.path.splitext(os.path.basename(file_name))[0]
+                pred_filename = os.path.join(pred_output, basename + '.png')
+                Image.fromarray(pred).save(pred_filename)
+                # colour prediction
+                output = output.numpy()
+                pred_colour_filename = os.path.join(pred_colour_output, basename + '.png')
+                pred_colour = 255 * np.ones([output.shape[0],output.shape[1],3], dtype=np.uint8)
+                for train_id, label in trainId2label.items():
+                    #if label.ignoreInEval:
+                    #    continue
+                    #pred_colour[np.broadcast_to(output == train_id, pred_colour.shape)] = 0 #label.color
+                    pred_colour[(output == train_id),0] = label.color[0]
+                    pred_colour[(output == train_id),1] = label.color[1]
+                    pred_colour[(output == train_id),2] = label.color[2]
+                Image.fromarray(pred_colour).save(pred_colour_filename)
+                #self._predictions.extend(self.encode_json_sem_seg(pred, input["file_name"]))
 
 
     def evaluate(self):
