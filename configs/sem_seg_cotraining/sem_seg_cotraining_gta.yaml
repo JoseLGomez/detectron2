@@ -24,17 +24,24 @@ SOLVER:
   IMS_PER_BATCH: 1
   BASE_LR: 0.002
   STEPS: (10000, )
-  MAX_ITER: 5000
-  CHECKPOINT_PERIOD: 5000
+  MAX_ITER: 3000
+  CHECKPOINT_PERIOD: 3000
 TEST:
-  EVAL_PERIOD: 5000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/testing_gta_cotraining_update_score_5k
+  EVAL_PERIOD: 3000
+OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/testing_gta_cotraining_update_score_3k
 AUGMENTATION_A:
-  HFLIP: False
+  CUTOUT: False
+  CUTOUT_N_HOLES: (0, 5)
+  CUTOUT_LENGTH: (100, 300)
+  RANDOM_RESIZE: True
+  RESIZE_RANGE: (0.5, 1.5)
+  HFLIP: True
   HFLIP_PROB: 0.5
 AUGMENTATION_B:
   CUTOUT: True
-  CUTOUT_N_HOLES: (0, 4)
-  CUTOUT_LENGTH: (100, 200)
+  CUTOUT_N_HOLES: (0, 5)
+  CUTOUT_LENGTH: (100, 300)
+  RANDOM_RESIZE: True
+  RESIZE_RANGE: (0.5, 1.5)
   HFLIP: True
   HFLIP_PROB: 0.5

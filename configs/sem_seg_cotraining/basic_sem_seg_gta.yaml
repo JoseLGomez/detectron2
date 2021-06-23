@@ -18,18 +18,18 @@ INPUT:
 SOLVER:
   IMS_PER_BATCH: 1
   BASE_LR: 0.002
-  STEPS: (60000, 80000)
-  MAX_ITER: 90000
+  STEPS: (30000, 40000)
+  MAX_ITER: 50000
   CHECKPOINT_PERIOD: 10000
 TEST:
   EVAL_PERIOD: 10000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_res50V2
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_res50V3_cutoutV2
 AUGMENTATION:
-  CUTOUT: False
-  CUTOUT_N_HOLES: (0, 5)
-  CUTOUT_LENGTH: (100, 300)
-  RANDOM_RESIZE: True
+  CUTOUT: True
+  CUTOUT_N_HOLES: (0, 1)
+  CUTOUT_LENGTH: (300, 600)
+  RANDOM_RESIZE: False
   RESIZE_RANGE: (0.5, 1.5)
-  HFLIP: True
+  HFLIP: False
   HFLIP_PROB: 0.5
  

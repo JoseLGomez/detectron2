@@ -1,0 +1,42 @@
+_BASE_: Base-DeepLabV3-OS16-Semantic.yaml
+MODEL:
+  WEIGHTS: "detectron2://DeepLab/R-103.pkl"
+  PIXEL_MEAN: [123.675, 116.280, 103.530]
+  PIXEL_STD: [58.395, 57.120, 57.375]
+  BACKBONE:
+    NAME: "build_resnet_deeplab_backbone"
+  RESNETS:
+    DEPTH: 101
+    NORM: "BN"
+    RES5_MULTI_GRID: [1, 2, 4]
+    STEM_TYPE: "deeplab"
+    STEM_OUT_CHANNELS: 128
+    STRIDE_IN_1X1: False
+  SEM_SEG_HEAD:
+    NAME: "DeepLabV3Head"
+    NORM: "BN"
+INPUT:
+  FORMAT: "RGB"
+DATASETS:
+  TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_train.txt
+  TRAIN_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_train.txt
+  TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_val.txt
+  TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
+  LABELS: "cityscapes"
+SOLVER:
+  IMS_PER_BATCH: 1
+  BASE_LR: 0.002
+  STEPS: (60000, 80000)
+  MAX_ITER: 90000
+  CHECKPOINT_PERIOD: 10000
+TEST:
+  EVAL_PERIOD: 10000
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cytiscapes/baseline_deepLabV3
+AUGMENTATION:
+  CUTOUT: False
+  CUTOUT_N_HOLES: (0, 5)
+  CUTOUT_LENGTH: (100, 300)
+  RANDOM_RESIZE: False
+  RESIZE_RANGE: (0.5, 1.5)
+  HFLIP: True
+  HFLIP_PROB: 0.5

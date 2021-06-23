@@ -58,6 +58,7 @@ from detectron2.data.datasets.generic_sem_seg_dataset import load_dataset_from_t
 from detectron2.data.common import MapDataset
 from cityscapesscripts.helpers.labels import labels
 from detectron2.data.catalog import Metadata
+from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 
 logger = logging.getLogger("detectron2")
 test_dataset_name = None
@@ -229,6 +230,10 @@ def do_train(cfg, model, resume=False):
             Image.fromarray(data[0]['image'].cpu().numpy().transpose(1,2,0).astype(np.uint8)).save(os.path.join(cfg.OUTPUT_DIR,'debug','image_%s.png' % iteration))
             Image.fromarray(data[0]['sem_seg'].cpu().numpy().astype(np.uint8)).save(os.path.join(cfg.OUTPUT_DIR,'debug','mask_%s.png' % iteration))
             exit(-1)'''
+            if cfg.AUGMENTATION.CUTOUT:
+                for idx, _ in enumerate(data):
+                    data[idx]['mask'] = data[idx]['sem_seg'] != 200 # recover mask from the CutOut
+                    data[idx]['sem_seg'][data[idx]['sem_seg'] == 200] = 19 # assign void class to the gt
             storage.iter = iteration
             loss_dict = model(data)
             losses = sum(loss_dict.values())
@@ -268,6 +273,7 @@ def setup(args):
     Create configs and perform basic setups.
     """
     cfg = get_cfg()
+    add_deeplab_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()

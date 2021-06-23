@@ -92,6 +92,7 @@ class SemanticSegmentor(nn.Module):
               The prediction has shape KxHxW that represents the logits of
               each class for each pixel.
         """
+
         images = [x["image"].to(self.device) for x in batched_inputs]
         images = [(x - self.pixel_mean) / self.pixel_std for x in images]
         images = ImageList.from_tensors(images, self.backbone.size_divisibility)
@@ -105,7 +106,13 @@ class SemanticSegmentor(nn.Module):
             ).tensor
         else:
             targets = None
-        results, losses = self.sem_seg_head(features, targets)
+
+        if 'mask' in batched_inputs[0]:
+            masks = [x["mask"].to(self.device) for x in batched_inputs]
+            masks = ImageList.from_tensors(masks, self.backbone.size_divisibility).tensor
+            results, losses = self.sem_seg_head(features, targets, masks)
+        else:
+            results, losses = self.sem_seg_head(features, targets)
 
         if self.training:
             return losses
@@ -214,7 +221,7 @@ class SemSegFPNHead(nn.Module):
             "loss_weight": cfg.MODEL.SEM_SEG_HEAD.LOSS_WEIGHT,
         }
 
-    def forward(self, features, targets=None):
+    def forward(self, features, targets=None, masks=None):
         """
         Returns:
             In training, returns (None, dict of losses)
@@ -222,7 +229,10 @@ class SemSegFPNHead(nn.Module):
         """
         x = self.layers(features)
         if self.training:
-            return None, self.losses(x, targets)
+            if masks is not None:
+                return None, self.losses(x, targets, masks)
+            else:
+                return None, self.losses(x, targets)
         else:
             x = F.interpolate(
                 x, scale_factor=self.common_stride, mode="bilinear", align_corners=False
@@ -238,11 +248,17 @@ class SemSegFPNHead(nn.Module):
         x = self.predictor(x)
         return x
 
-    def losses(self, predictions, targets):
+    def losses(self, predictions, targets, masks=None):
         predictions = predictions.float()  # https://github.com/pytorch/pytorch/issues/48163
         predictions = F.interpolate(
             predictions, scale_factor=self.common_stride, mode="bilinear", align_corners=False
         )
+        if masks is not None:
+            for idx, prediction in enumerate(predictions):
+                aux_mask = masks[idx].unsqueeze(0).expand(predictions[idx].size())
+                predictions[idx] = prediction * aux_mask
+                #print(predictions[idx])
+                #print(torch.unique(masks[idx], return_counts=True))
         loss = F.cross_entropy(
             predictions, targets, reduction="mean", ignore_index=self.ignore_value
         )

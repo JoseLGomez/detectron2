@@ -53,13 +53,13 @@ class CutOut(Transform):
     def apply_image(self, img, seg_mode=False):
         if seg_mode:
             img = img * self.mask[:,:,0]
-            img = img + ((1-self.mask[:,:,0])*19) # void class 19 on Cityscapes train
+            img = img + ((1-self.mask[:,:,0])*200) # CutOut pixels set to 200 to detect them later and create a mask for the loss
         else:
             img = img * self.mask
         return img
 
     def apply_segmentation(self, segmentation):
-        return self.apply_image(segmentation, seg_mode=True)
+        return segmentation #self.apply_image(segmentation, seg_mode=True)
 
     def apply_coords(self, coords):
         return coords

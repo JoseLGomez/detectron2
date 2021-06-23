@@ -128,6 +128,7 @@ class ASPP(nn.Module):
 
     def forward(self, x):
         size = x.shape[-2:]
+        #add padding for inconsistent input sizes to avoid error
         if self.pool_kernel_size is not None:
             if size[0] % self.pool_kernel_size[0] or size[1] % self.pool_kernel_size[1]:
                 raise ValueError(
