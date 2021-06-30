@@ -95,6 +95,17 @@ def built_custom_dataset(cfg, image_dir, gt_dir, split):
 
 def build_sem_seg_train_aug(cfg):
     augs = []
+    if cfg.INPUT.ACTIVATE_MIN_SIZE_TRAIN:
+        augs.append(T.ResizeShortestEdge(
+            cfg.INPUT.MIN_SIZE_TRAIN, cfg.INPUT.MAX_SIZE_TRAIN, cfg.INPUT.MIN_SIZE_TRAIN_SAMPLING))
+    if cfg.INPUT.RESIZED:
+        augs.append(T.Resize(cfg.INPUT.RESIZE_SIZE))
+    if cfg.INPUT.CROP.ENABLED:
+        augs.append(T.RandomCrop_CategoryAreaConstraint(
+                cfg.INPUT.CROP.TYPE,
+                cfg.INPUT.CROP.SIZE,
+                cfg.INPUT.CROP.SINGLE_CATEGORY_MAX_AREA,
+                cfg.MODEL.SEM_SEG_HEAD.IGNORE_VALUE))
     if cfg.AUGMENTATION.HFLIP:
         augs.append(T.RandomFlip(prob=cfg.AUGMENTATION.HFLIP_PROB, horizontal=True, vertical=False))
     if cfg.AUGMENTATION.VFLIP:

@@ -322,7 +322,7 @@ class DeepLabV3Head(nn.Module):
         else:
             raise ValueError("Unexpected loss type: %s" % self.loss_type)
 
-    def forward(self, features, targets=None):
+    def forward(self, features, targets=None, masks=None):
         """
         Returns:
             In training, returns (None, dict of losses)
@@ -332,17 +332,24 @@ class DeepLabV3Head(nn.Module):
         x = self.aspp(x)
         x = self.predictor(x)
         if self.training:
-            return None, self.losses(x, targets)
+            if masks is not None:
+                return None, self.losses(x, targets, masks)
+            else:
+                return None, self.losses(x, targets)
         else:
             x = F.interpolate(
                 x, scale_factor=self.common_stride, mode="bilinear", align_corners=False
             )
             return x, {}
 
-    def losses(self, predictions, targets):
+    def losses(self, predictions, targets, masks=None):
         predictions = F.interpolate(
             predictions, scale_factor=self.common_stride, mode="bilinear", align_corners=False
         )
+        if masks is not None:
+            for idx, prediction in enumerate(predictions):
+                aux_mask = masks[idx].unsqueeze(0).expand(predictions[idx].size())
+                predictions[idx] = prediction * aux_mask
         loss = self.loss(predictions, targets)
         losses = {"loss_sem_seg": loss * self.loss_weight}
         return losses

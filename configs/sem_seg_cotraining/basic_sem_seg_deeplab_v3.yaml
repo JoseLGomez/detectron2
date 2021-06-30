@@ -17,6 +17,17 @@ MODEL:
     NORM: "BN"
 INPUT:
   FORMAT: "RGB"
+  ACTIVATE_MIN_SIZE_TRAIN: True
+  MIN_SIZE_TRAIN: (512, 768, 1024, 1280, 1536, 1792, 2048)
+  MIN_SIZE_TRAIN_SAMPLING: "choice"
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TRAIN: 4096
+  MAX_SIZE_TEST: 2048
+  CROP:
+    ENABLED: True
+    TYPE: "absolute"
+    SIZE: (512, 1024)
+    SINGLE_CATEGORY_MAX_AREA: 1.0
 DATASETS:
   TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_train.txt
   TRAIN_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_train.txt
@@ -24,14 +35,14 @@ DATASETS:
   TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
   LABELS: "cityscapes"
 SOLVER:
-  IMS_PER_BATCH: 1
+  IMS_PER_BATCH: 4
   BASE_LR: 0.002
   STEPS: (60000, 80000)
   MAX_ITER: 90000
   CHECKPOINT_PERIOD: 10000
 TEST:
   EVAL_PERIOD: 10000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cytiscapes/baseline_deepLabV3
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cytiscapes/baseline_deepLabV3_crops_train_samplingV2
 AUGMENTATION:
   CUTOUT: False
   CUTOUT_N_HOLES: (0, 5)

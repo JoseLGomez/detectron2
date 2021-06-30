@@ -46,6 +46,7 @@ _C.MODEL.PIXEL_STD = [1.0, 1.0, 1.0]
 # INPUT
 # -----------------------------------------------------------------------------
 _C.INPUT = CN()
+_C.INPUT.ACTIVATE_MIN_SIZE_TRAIN = False
 # Size of the smallest side of the image during training
 _C.INPUT.MIN_SIZE_TRAIN = (800,)
 # Sample size of smallest side by choice or random selection from range give by
@@ -66,7 +67,9 @@ _C.INPUT.CROP.TYPE = "relative_range"
 # Size of crop in range (0, 1] if CROP.TYPE is "relative" or "relative_range" and in number of
 # pixels if CROP.TYPE is "absolute"
 _C.INPUT.CROP.SIZE = [0.9, 0.9]
-
+# all input data resized to the determined h.w size
+_C.INPUT.RESIZED = False
+_C.INPUT.RESIZE_SIZE = (1024, 2048)
 
 # Whether the model needs RGB, YUV, HSV etc.
 # Should be one of the modes defined here, as we use PIL to read the image:

@@ -66,6 +66,7 @@ import torch
 from contextlib import ExitStack, contextmanager
 from cityscapesscripts.helpers.labels import trainId2label, labels
 from detectron2.utils.logger import log_every_n_seconds
+from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 
 logger = logging.getLogger("detectron2")
 INIT_TGT_PORT = 0.2
@@ -216,14 +217,27 @@ def built_inference_dataset(cfg, im_list, dataset_name):
     )
 
 
-def build_sem_seg_train_aug(cfg):
+def build_sem_seg_train_aug(cfg, augmentation):
     augs = []
-    if cfg['hflip']:
-        augs.append(T.RandomFlip(prob=cfg['hflip_prob'], horizontal=True, vertical=False))
-    if cfg['vflip']:
-        augs.append(T.RandomFlip(prob=cfg['vflip_prob'], horizontal=False, vertical=True))
-    if cfg['cutout']:
-        augs.append(T.CutOutPolicy(cfg['cutout_n_holes'], cfg['cutout_length']))
+    if cfg.INPUT.ACTIVATE_MIN_SIZE_TRAIN:
+        augs.append(T.ResizeShortestEdge(
+            cfg.INPUT.MIN_SIZE_TRAIN, cfg.INPUT.MAX_SIZE_TRAIN, cfg.INPUT.MIN_SIZE_TRAIN_SAMPLING))
+    if cfg.INPUT.RESIZED:
+        augs.append(T.Resize(cfg.INPUT.RESIZE_SIZE))
+    if cfg.INPUT.CROP.ENABLED:
+        augs.append(T.RandomCrop_CategoryAreaConstraint(
+                cfg.INPUT.CROP.TYPE,
+                cfg.INPUT.CROP.SIZE,
+                cfg.INPUT.CROP.SINGLE_CATEGORY_MAX_AREA,
+                cfg.MODEL.SEM_SEG_HEAD.IGNORE_VALUE))
+    if augmentation['hflip']:
+        augs.append(T.RandomFlip(prob=augmentation['hflip_prob'], horizontal=True, vertical=False))
+    if augmentation['vflip']:
+        augs.append(T.RandomFlip(prob=augmentation['vflip_prob'], horizontal=False, vertical=True))
+    if augmentation['cutout']:
+        augs.append(T.CutOutPolicy(augmentation['cutout_n_holes'], augmentation['cutout_length']))
+    if augmentation['random_resize']:
+        augs.append(T.TrainScalePolicy(augmentation['resize_range']))
     return augs
 
 
@@ -331,7 +345,11 @@ def inference_on_imlist(cfg, model, weights, dataset_name):
             batch_outputs = model(inputs)
             for output in batch_outputs:
                 # Saving indexes and values of maximums instead the 20 channels scores to save memory
-                output = output['sem_seg'].cpu().numpy()
+                output = output['sem_seg']
+                output = torch.unsqueeze(output, 0)
+                output = softmax2d(output)
+                output = torch.squeeze(output)
+                output = output.cpu().numpy()
                 amax_output = np.asarray(np.argmax(output, axis=0), dtype=np.uint8)
                 conf = np.amax(output,axis=0)
                 outputs.append([amax_output, conf])
@@ -393,7 +411,9 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_i
                          'hflip': cfg.AUGMENTATION_A.HFLIP,
                          'hflip_prob': cfg.AUGMENTATION_A.HFLIP_PROB,
                          'vflip': cfg.AUGMENTATION_A.VFLIP,
-                         'vflip_prob': cfg.AUGMENTATION_A.VFLIP_PROB}
+                         'vflip_prob': cfg.AUGMENTATION_A.VFLIP_PROB,
+                         'random_resize': cfg.AUGMENTATION_A.RANDOM_RESIZE,
+                         'resize_range': cfg.AUGMENTATION_A.RESIZE_RANGE}
     elif model_id.lower() == 'b':
         augmentations = {'cutout': cfg.AUGMENTATION_B.CUTOUT,
                          'cutout_n_holes': cfg.AUGMENTATION_B.CUTOUT_N_HOLES,
@@ -401,13 +421,15 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_i
                          'hflip': cfg.AUGMENTATION_B.HFLIP,
                          'hflip_prob': cfg.AUGMENTATION_B.HFLIP_PROB,
                          'vflip': cfg.AUGMENTATION_B.VFLIP,
-                         'vflip_prob': cfg.AUGMENTATION_B.VFLIP_PROB}
+                         'vflip_prob': cfg.AUGMENTATION_B.VFLIP_PROB,
+                         'random_resize': cfg.AUGMENTATION_B.RANDOM_RESIZE,
+                         'resize_range': cfg.AUGMENTATION_B.RESIZE_RANGE}
     else:
         raise NotImplementedError('Unknown model id for data augmentation')
 
     
     if "SemanticSegmentor" in cfg.MODEL.META_ARCHITECTURE:
-        mapper = DatasetMapper(cfg, is_train=True, augmentations=build_sem_seg_train_aug(augmentations))
+        mapper = DatasetMapper(cfg, is_train=True, augmentations=build_sem_seg_train_aug(cfg, augmentations))
     else:
         mapper = None
 
@@ -420,7 +442,6 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_i
         for data, iteration in zip(data_loader, range(start_iter, max_iter)):
             #print(data[0]['file_name'])
             #print('%s x %s' % (data[0]['height'], data[0]['width']))
-            #print(data[0]['sem_seg'].shape)
             storage.iter = iteration
             loss_dict = model(data)
             losses = sum(loss_dict.values())
@@ -459,6 +480,7 @@ def setup(args):
     Create configs and perform basic setups.
     """
     cfg = get_cfg()
+    add_deeplab_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()
@@ -482,8 +504,6 @@ def prepare_confidence_maps(outputs, num_classes):
     conf_dict = {k: [] for k in range(num_classes)}
     pred_cls_num = np.zeros(num_classes)
     for idx, output in enumerate(outputs):
-        #output = torch.unsqueeze(output, 0)
-        #output = softmax2d(output).cpu().data[0].numpy()
         amax_output = output[0]
         conf = output[1]
         pred_label = amax_output.copy()
@@ -500,7 +520,6 @@ def prepare_confidence_maps(outputs, num_classes):
 
 def compute_kc_thresholds(conf_dict, pred_cls_num, tgt_portion, num_classes):
     # threshold for each class
-    conf_tot = 0.0
     cls_thresh = np.ones(num_classes,dtype = np.float32)
     cls_sel_size = np.zeros(num_classes, dtype=np.float32)
     cls_size = np.zeros(num_classes, dtype=np.float32)
@@ -514,7 +533,9 @@ def compute_kc_thresholds(conf_dict, pred_cls_num, tgt_portion, num_classes):
             if len_cls_thresh != 0:
                 cls_thresh[idx_cls] = conf_dict[idx_cls][len_cls_thresh-1]
             conf_dict[idx_cls] = None
+    logger.info("CBST thresholds: {}".format(cls_thresh))
     return cls_thresh
+
 
 def generate_pseudolabels(outputs, cls_thresh, tgt_num):
     pseudolabels = []
@@ -541,9 +562,44 @@ def apply_cbst(outputs, num_classes, tgt_num, tgt_portion):
     return pseudolabels, scores_list
 
 
+def compute_mtp_thresholds(pred_conf, pred_cls_num, tgt_portion, num_classes):
+    thres = []
+    for i in range(num_classes):
+        x = pred_conf[pred_cls_num==i]
+        if len(x) == 0:
+            thres.append(0)
+            continue        
+        x = np.sort(x)
+        thres.append(x[np.int(np.round(len(x)*tgt_portion))])
+    thres = np.array(thres)
+    thres[thres>0.9]=0.9
+    return thres
+
+
+def apply_mtp(outputs, num_classes, tgt_num, tgt_portion):
+    pred_cls_num = np.zeros((tgt_num, outputs[0][0].shape[0], outputs[0][0].shape[1]))
+    pred_conf = np.zeros((tgt_num, outputs[0][0].shape[0], outputs[0][0].shape[1]))
+    for index, output in enumerate(outputs):
+        pred_cls_num[index] = output[0]
+        pred_conf[index] = output[1]
+    thres = compute_mtp_thresholds(pred_conf, pred_cls_num, tgt_portion, num_classes)
+    pseudolabels = []
+    scores_list = []
+    for index in range(tgt_num):
+        label = predicted_label[index]
+        prob = predicted_prob[index]
+        for i in range(num_classes):
+            label[(prob<thres[i])*(label==i)] = 19 # '255' in cityscapes indicates 'unlabaled' for trainIDs
+            prob[(prob<thres[i])*(label==i)] = np.nan
+        pseudolabels.append(label)
+        scores_list.append(prob)
+    return pseudolabels, scores_list
+
+
 def create_folder(folder):
     if not os.path.exists(folder):
         os.makedirs(folder)
+
 
 def save_pseudolabels(images, pseudolabels, scores, pseudolabels_path, coloured_pseudolabels_path):
     filenames_and_scores = os.path.join('/'.join(pseudolabels_path.split('/')[:-1]),'filenames_and_scores.txt')
@@ -638,6 +694,8 @@ def main(args):
     collaboration = cfg.PSEUDOLABELING.COLLABORATION
     accumulation_mode = cfg.PSEUDOLABELING.ACCUMULATION
     num_selected = cfg.PSEUDOLABELING.NUMBER
+    weights_branchA = args.weights_branchA
+    weights_branchB = args.weights_branchB
     if pseudolabeling == 'cbst':
         tgt_portion = INIT_TGT_PORT
 
@@ -666,11 +724,11 @@ def main(args):
         model = build_model(cfg)
         logger.info("Compute inference on unlabeled datasets")
         start_time = time.perf_counter()
-        inference_A = inference_on_imlist(cfg, model, args.weights_branchA, args.unlabeled_dataset_A_name)
+        inference_A = inference_on_imlist(cfg, model, weights_branchA, args.unlabeled_dataset_A_name)
         total_time = time.perf_counter() - start_time
         logger.info("Compute inference on unlabeled dataset A: {:.2f} s".format(total_time))
         start_time = time.perf_counter()
-        inference_B = inference_on_imlist(cfg, model, args.weights_branchB, args.unlabeled_dataset_B_name)   
+        inference_B = inference_on_imlist(cfg, model, weights_branchB, args.unlabeled_dataset_B_name)   
         total_time = time.perf_counter() - start_time
         logger.info("Compute inference on unlabeled dataset B: {:.2f} s".format(total_time))
         logger.info("Pseudolabeling mode: {}".format(pseudolabeling)) 
@@ -684,6 +742,15 @@ def main(args):
             total_time = time.perf_counter() - start_time
             logger.info("CBST on unlabeled dataset B: {:.2f} s".format(total_time))
             tgt_portion = min(tgt_portion + TGT_PORT_STEP, MAX_TGT_PORT)
+        elif pseudolabeling == 'mpt':
+            start_time = time.perf_counter()
+            pseudolabels_A, scores_listA = apply_mtp(inference_A, cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES,len(unlabeled_datasetA), 0.5)
+            total_time = time.perf_counter() - start_time
+            logger.info("MTP on unlabeled dataset A: {:.2f} s".format(total_time))
+            start_time = time.perf_counter()
+            pseudolabels_B, scores_listB = apply_mtp(inference_B, cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES,len(unlabeled_datasetB), 0.5)
+            total_time = time.perf_counter() - start_time
+            logger.info("MTP on unlabeled dataset B: {:.2f} s".format(total_time))
         else:
             raise Exception('unknown pseudolabeling method defined')
 
@@ -713,6 +780,8 @@ def main(args):
             accumulated_selection_imgB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/dataset_img.txt')
             accumulated_selection_pseudoB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/dataset_pseudolabels.txt')
             accumulated_scores_B = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/filenames_and_scores.txt')
+            weights_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch-1),'checkpoints/model_final.pth')
+            weights_branchB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'checkpoints/model_final.pth')
             continue_epoch = 0
 
         logger.info("Collaboration mode: {}".format(collaboration))        
@@ -812,6 +881,10 @@ def main(args):
         MetadataCatalog.remove(dataset_A_name)
         DatasetCatalog.remove(dataset_B_name)
         MetadataCatalog.remove(dataset_B_name)
+
+        # refresh weight file pointers after iteration for initial inference
+        weights_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints/model_final.pth')
+        weights_branchB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'checkpoints/model_final.pth')
 
 
 

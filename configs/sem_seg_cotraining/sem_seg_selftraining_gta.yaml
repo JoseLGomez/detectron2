@@ -10,13 +10,13 @@ MODEL:
 DATASETS:
   TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/GTA/gta5_rgb.txt
   TRAIN_GT_TXT: /datatmp/Datasets/segmentation/GTA/gta5_gt_cityscapes.txt
-  TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_val_debug.txt
-  TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val_debug.txt
+  TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_subtrain_val.txt
+  TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_subtrain_val.txt
   LABELS: "cityscapes"
 PSEUDOLABELING: 
-  NUMBER: 10 # number of pseudolabels that will be added to the source dataset
-  MODE: "mpt"
-  COLLABORATION: "cotraining"
+  NUMBER: 100 # number of pseudolabels that will be added to the source dataset
+  MODE: "cbst"
+  COLLABORATION: "none"
   ACCUMULATION: "update_best_score"
 INPUT:
   FORMAT: "RGB"
@@ -37,11 +37,11 @@ SOLVER:
   IMS_PER_BATCH: 4
   BASE_LR: 0.002
   STEPS: (10000, )
-  MAX_ITER: 10
-  CHECKPOINT_PERIOD: 10
+  MAX_ITER: 5000
+  CHECKPOINT_PERIOD: 5000
 TEST:
-  EVAL_PERIOD: 10
-OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/debug
+  EVAL_PERIOD: 5000
+OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/gta_selftraining_update_score_5k_deepconf
 AUGMENTATION_A:
   CUTOUT: False
   CUTOUT_N_HOLES: (0, 1)

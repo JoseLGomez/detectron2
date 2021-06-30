@@ -14,12 +14,32 @@ DATASETS:
   TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
   LABELS: "cityscapes"
 INPUT:
+  ACTIVATE_MIN_SIZE_TRAIN: True
   MIN_SIZE_TRAIN: (640, 672, 704, 736, 768, 800)
-  RANDOM_FLIP: "horizontal"
-  FLIP_PROB: 1.0
+  MIN_SIZE_TRAIN_SAMPLING: "choice"
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TRAIN: 4096
+  MAX_SIZE_TEST: 2048
+  CROP:
+    ENABLED: True
+    TYPE: "absolute"
+    SIZE: (512, 1024)
+    SINGLE_CATEGORY_MAX_AREA: 1.0
 SOLVER:
-  IMS_PER_BATCH: 1
+  IMS_PER_BATCH: 4
+  BASE_LR: 0.002
+  STEPS: (60000, 80000)
+  MAX_ITER: 90000
+  CHECKPOINT_PERIOD: 5000
 TEST:
-  EVAL_PERIOD: 20000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cityscapes/baseline_res50
+  EVAL_PERIOD: 5000
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cityscapes/baseline_RCNN-res50_deepconf
+AUGMENTATION:
+  CUTOUT: False
+  CUTOUT_N_HOLES: (0, 5)
+  CUTOUT_LENGTH: (100, 300)
+  RANDOM_RESIZE: False
+  RESIZE_RANGE: (0.5, 1.5)
+  HFLIP: True
+  HFLIP_PROB: 0.5
  
