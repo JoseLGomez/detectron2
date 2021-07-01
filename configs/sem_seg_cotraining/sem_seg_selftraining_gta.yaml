@@ -15,7 +15,7 @@ DATASETS:
   LABELS: "cityscapes"
 PSEUDOLABELING: 
   NUMBER: 100 # number of pseudolabels that will be added to the source dataset
-  MODE: "cbst"
+  MODE: "mpt"
   COLLABORATION: "none"
   ACCUMULATION: "update_best_score"
 INPUT:
@@ -38,10 +38,10 @@ SOLVER:
   BASE_LR: 0.002
   STEPS: (10000, )
   MAX_ITER: 5000
-  CHECKPOINT_PERIOD: 5000
+  CHECKPOINT_PERIOD: 2500
 TEST:
-  EVAL_PERIOD: 5000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/gta_selftraining_update_score_5k_deepconf
+  EVAL_PERIOD: 2500
+OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/gta_selftraining_update_score_5k_deepconf_mpt
 AUGMENTATION_A:
   CUTOUT: False
   CUTOUT_N_HOLES: (0, 1)
