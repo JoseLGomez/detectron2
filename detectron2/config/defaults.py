@@ -578,6 +578,9 @@ _C.SOLVER.CLIP_GRADIENTS.NORM_TYPE = 2.0
 # To use AMP in inference, run inference under autocast()
 _C.SOLVER.AMP = CN({"ENABLED": False})
 
+_C.SOLVER.ALTERNATE_SOURCE_PSEUDOLABELS = False
+_C.SOLVER.SOURCE_PSEUDOLABELS_BATCH_RATIO = None # ratio sum must match IMS_PER_BATCH, 1st values source batch size, second values target batch size
+
 # ---------------------------------------------------------------------------- #
 # Specific test options
 # ---------------------------------------------------------------------------- #

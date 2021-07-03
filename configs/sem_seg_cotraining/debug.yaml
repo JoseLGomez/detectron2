@@ -34,6 +34,8 @@ INPUT:
     SIZE: (512, 1024)
     SINGLE_CATEGORY_MAX_AREA: 1.0
 SOLVER:
+  ALTERNATE_SOURCE_PSEUDOLABELS: True
+  SOURCE_PSEUDOLABELS_BATCH_RATIO: (2, 2) # ratio sum must match IMS_PER_BATCH, 1st values source batch size, second values target batch size
   IMS_PER_BATCH: 4
   BASE_LR: 0.002
   STEPS: (10000, )

@@ -305,7 +305,7 @@ def build_batch_data_loader(
         )
 
 
-def _train_loader_from_config(cfg, mapper=None, *, dataset=None, sampler=None):
+def _train_loader_from_config(cfg, mapper=None, *, dataset=None, sampler=None, total_batch_size=1):
     if dataset is None:
         dataset = get_detection_dataset_dicts(
             cfg.DATASETS.TRAIN,
@@ -338,7 +338,7 @@ def _train_loader_from_config(cfg, mapper=None, *, dataset=None, sampler=None):
         "dataset": dataset,
         "sampler": sampler,
         "mapper": mapper,
-        "total_batch_size": cfg.SOLVER.IMS_PER_BATCH,
+        "total_batch_size": total_batch_size,
         "aspect_ratio_grouping": cfg.DATALOADER.ASPECT_RATIO_GROUPING,
         "num_workers": cfg.DATALOADER.NUM_WORKERS,
     }

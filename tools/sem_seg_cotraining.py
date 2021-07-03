@@ -177,14 +177,14 @@ def cotraining_argument_parser(parser):
         dest='initial_score_A',
         help='Initial score to reach to propagate weights to the next epoch',
         default=0,
-        type=int
+        type=float
     )
     parser.add_argument(
         '--initial_score_B',
         dest='initial_score_B',
         help='Initial score to reach to propagate weights to the next epoch',
         default=0,
-        type=int
+        type=float
     )
     return parser
 
@@ -386,7 +386,8 @@ def inference_on_imlist(cfg, model, weights, dataset_name):
     return outputs
 
 
-def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_id, save_checkpoints_path, epoch, continue_epoch, incremental_training=False, resume=False):
+def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_id, save_checkpoints_path, epoch, 
+             continue_epoch, incremental_training=False, resume=False, dataset_pseudolabels=None):
     model.train()
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
@@ -452,9 +453,17 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_i
     dataset: List[Dict] = DatasetCatalog.get(train_dataset_name)
     data_loader = build_detection_train_loader(cfg, dataset=dataset, mapper=mapper)
     logger.info("Starting training from iteration {}".format(start_iter))
-    results_list = []
     with EventStorage(start_iter) as storage:
-        for data, iteration in zip(data_loader, range(start_iter, max_iter)):
+        results_list = []
+        if cfg.SOLVER.ALTERNATE_SOURCE_PSEUDOLABELS and dataset_pseudolabels is not None:
+            data_loader = build_detection_train_loader(cfg, dataset=dataset, mapper=mapper, total_batch_size=cfg.SOLVER.SOURCE_PSEUDOLABELS_BATCH_RATIO[0])
+            dataset_pseudo: List[Dict] = DatasetCatalog.get(dataset_pseudolabels)
+            data_loader_pseudo = build_detection_train_loader(cfg, dataset=dataset_pseudo, mapper=mapper, total_batch_size=cfg.SOLVER.SOURCE_PSEUDOLABELS_BATCH_RATIO[1])
+            results_list = training_loop_mixdatasets(cfg, model, start_iter, max_iter, data_loader, data_loader_pseudo, storage, optimizer, scheduler, periodic_checkpointer, writers, test_dataset_name, epoch, model_id)
+        else:
+            data_loader = build_detection_train_loader(cfg, dataset=dataset, mapper=mapper, total_batch_size=cfg.SOLVER.IMS_PER_BATCH)
+            results_list = training_loop(cfg, model, start_iter, max_iter, data_loader, storage, optimizer, scheduler, periodic_checkpointer, writers, test_dataset_name, epoch, model_id)
+        '''for data, iteration in zip(data_loader, range(start_iter, max_iter)):
             #print(data[0]['file_name'])
             #print('%s x %s' % (data[0]['height'], data[0]['width']))
             storage.iter = iteration
@@ -488,9 +497,88 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_i
             ):
                 for writer in writers:
                     writer.write()
-            periodic_checkpointer.step(iteration)
+            periodic_checkpointer.step(iteration)'''
     return results_list
 
+def training_loop(cfg, model, start_iter, max_iter, data_loader, storage, optimizer, scheduler, periodic_checkpointer, writers, test_dataset_name, epoch, model_id):
+    results_list = []
+    for data, iteration in zip(data_loader, range(start_iter, max_iter)):
+        #print(data[0]['file_name'])
+        #print('%s x %s' % (data[0]['height'], data[0]['width']))
+        storage.iter = iteration
+        loss_dict = model(data)
+        losses = sum(loss_dict.values())
+        assert torch.isfinite(losses).all(), loss_dict
+
+        loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}
+        losses_reduced = sum(loss for loss in loss_dict_reduced.values())
+        if comm.is_main_process():
+            storage.put_scalars(total_loss=losses_reduced, **loss_dict_reduced)
+
+        optimizer.zero_grad()
+        losses.backward()
+        optimizer.step()
+        storage.put_scalar("lr", optimizer.param_groups[0]["lr"], smoothing_hint=False)
+        scheduler.step()
+
+
+        if (
+            cfg.TEST.EVAL_PERIOD > 0
+            and (iteration + 1) % cfg.TEST.EVAL_PERIOD == 0
+        ):
+            results = do_test_txt(cfg, model, test_dataset_name, iteration+1, epoch, model_id)
+            results_list.append([results['sem_seg']['mIoU'],iteration])
+            # Compared to "train_net.py", the test results are not dumped to EventStorage
+            comm.synchronize()
+
+        if iteration - start_iter > 5 and (
+            (iteration + 1) % 20 == 0 or iteration == max_iter - 1
+        ):
+            for writer in writers:
+                writer.write()
+        periodic_checkpointer.step(iteration)
+    return results_list
+
+def training_loop_mixdatasets(cfg, model, start_iter, max_iter, data_loader, data_loader_pseudo, storage, optimizer, scheduler, periodic_checkpointer, writers, test_dataset_name, epoch, model_id):
+    ''' Training loop that mixes two dataloaders to compose the final batch with the proportion specified'''
+    results_list = []
+
+    for data1, data2, iteration in zip(data_loader, itertools.cycle(data_loader_pseudo), range(start_iter, max_iter)):
+        #print(data[0]['file_name'])
+        #print('%s x %s' % (data[0]['height'], data[0]['width']))
+        storage.iter = iteration
+        loss_dict = model(data1+data2)
+        losses = sum(loss_dict.values())
+        assert torch.isfinite(losses).all(), loss_dict
+
+        loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}
+        losses_reduced = sum(loss for loss in loss_dict_reduced.values())
+        if comm.is_main_process():
+            storage.put_scalars(total_loss=losses_reduced, **loss_dict_reduced)
+
+        optimizer.zero_grad()
+        losses.backward()
+        optimizer.step()
+        storage.put_scalar("lr", optimizer.param_groups[0]["lr"], smoothing_hint=False)
+        scheduler.step()
+
+
+        if (
+            cfg.TEST.EVAL_PERIOD > 0
+            and (iteration + 1) % cfg.TEST.EVAL_PERIOD == 0
+        ):
+            results = do_test_txt(cfg, model, test_dataset_name, iteration+1, epoch, model_id)
+            results_list.append([results['sem_seg']['mIoU'],iteration])
+            # Compared to "train_net.py", the test results are not dumped to EventStorage
+            comm.synchronize()
+
+        if iteration - start_iter > 5 and (
+            (iteration + 1) % 20 == 0 or iteration == max_iter - 1
+        ):
+            for writer in writers:
+                writer.write()
+        periodic_checkpointer.step(iteration)
+    return results_list
 
 def setup(args):
     """
@@ -624,7 +712,8 @@ def create_folder(folder):
         os.makedirs(folder)
 
 
-def save_pseudolabels(images, pseudolabels, scores, pseudolabels_path, coloured_pseudolabels_path, pseudolabels_not_filtered=None, coloured_pseudolabels_not_filtered_path=None):
+def save_pseudolabels(images, pseudolabels, scores, pseudolabels_path, coloured_pseudolabels_path, 
+                      pseudolabels_not_filtered=None, coloured_pseudolabels_not_filtered_path=None):
     filenames_and_scores = os.path.join('/'.join(pseudolabels_path.split('/')[:-1]),'filenames_and_scores.txt')
     images_txt = os.path.join('/'.join(pseudolabels_path.split('/')[:-1]),'selected_images_path.txt')
     psedolabels_txt = os.path.join('/'.join(pseudolabels_path.split('/')[:-1]),'selected_pseudolabels_path.txt')
@@ -818,29 +907,37 @@ def main(args):
             accumulated_selection_imgB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/dataset_img.txt')
             accumulated_selection_pseudoB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/dataset_pseudolabels.txt')
             accumulated_scores_B = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'unlabeled_data_selected/filenames_and_scores.txt')
-            weights_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch-1),'checkpoints/model_final.pth')
-            weights_branchB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'checkpoints/model_final.pth')
+            #weights_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch-1),'checkpoints/model_final.pth')
+            #weights_branchB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch-1),'checkpoints/model_final.pth')
             continue_epoch = 0
 
         logger.info("Collaboration mode: {}".format(collaboration))        
         if collaboration.lower() == 'none': #Self-training for each branch
             # Order pseudolabels by confidences (scores) higher to lower and select number defined to merge with source data
-            scores_listA, pseudolabels_A, unlabeled_datasetA, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listA, pseudolabels_A, unlabeled_datasetA, pseudolabels_A_not_filtered),reverse=True)))
-            scores_listB, pseudolabels_B, unlabeled_datasetB, pseudolabels_B_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, unlabeled_datasetB, pseudolabels_B_not_filtered),reverse=True)))
+            scores_listA, pseudolabels_A, unlabeled_datasetA, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listA, pseudolabels_A, 
+                                                                                            unlabeled_datasetA, pseudolabels_A_not_filtered),reverse=True)))
+            scores_listB, pseudolabels_B, unlabeled_datasetB, pseudolabels_B_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, 
+                                                                                            unlabeled_datasetB, pseudolabels_B_not_filtered),reverse=True)))
             # select candidates and save them to add them to the source data
         elif collaboration == 'cotraining':
-            scores_listA, pseudolabels_A, unlabeled_datasetA, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, unlabeled_datasetA, pseudolabels_B_not_filtered),reverse=False)))
-            scores_listB, pseudolabels_B, unlabeled_datasetB, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listA, pseudolabels_A, unlabeled_datasetB, pseudolabels_A_not_filtered),reverse=False)))
+            scores_listA, pseudolabels_A, unlabeled_datasetA, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, 
+                                                                                            unlabeled_datasetA, pseudolabels_B_not_filtered),reverse=False)))
+            scores_listB, pseudolabels_B, unlabeled_datasetB, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listA, pseudolabels_A, 
+                                                                                            unlabeled_datasetB, pseudolabels_A_not_filtered),reverse=False)))
         else:
             raise Exception('unknown collaboration of models defined')
 
         # select candidates and save them to add them to the source data
         if len(unlabeled_datasetA) > cfg.PSEUDOLABELING.NUMBER:
-            images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA[:num_selected], pseudolabels_A[:num_selected], scores_listA[:num_selected], pseudolabels_path_model_A, coloured_pseudolabels_path_model_A, pseudolabels_A_not_filtered[:num_selected], coloured_pseudolabels_not_filtered_path_model_A)
-            images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB[:num_selected], pseudolabels_B[:num_selected], scores_listB[:num_selected], pseudolabels_path_model_B, coloured_pseudolabels_path_model_B, pseudolabels_B_not_filtered[:num_selected], coloured_pseudolabels_not_filtered_path_model_B)      
+            images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA[:num_selected], pseudolabels_A[:num_selected], scores_listA[:num_selected], 
+                pseudolabels_path_model_A, coloured_pseudolabels_path_model_A, pseudolabels_A_not_filtered[:num_selected], coloured_pseudolabels_not_filtered_path_model_A)
+            images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB[:num_selected], pseudolabels_B[:num_selected], scores_listB[:num_selected], 
+                pseudolabels_path_model_B, coloured_pseudolabels_path_model_B, pseudolabels_B_not_filtered[:num_selected], coloured_pseudolabels_not_filtered_path_model_B)      
         else:
-            images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA, pseudolabels_A, scores_listA, pseudolabels_path_model_A, coloured_pseudolabels_path_model_A, pseudolabels_A_not_filtered, coloured_pseudolabels_not_filtered_path_model_A)
-            images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB, pseudolabels_B, scores_listB, pseudolabels_path_model_B, coloured_pseudolabels_path_model_B, pseudolabels_B_not_filtered, coloured_pseudolabels_not_filtered_path_model_B)
+            images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(unlabeled_datasetA, pseudolabels_A, scores_listA, pseudolabels_path_model_A, 
+                coloured_pseudolabels_path_model_A, pseudolabels_A_not_filtered, coloured_pseudolabels_not_filtered_path_model_A)
+            images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(unlabeled_datasetB, pseudolabels_B, scores_listB, pseudolabels_path_model_B, 
+                coloured_pseudolabels_path_model_B, pseudolabels_B_not_filtered, coloured_pseudolabels_not_filtered_path_model_B)
 
         # Compute data accumulation procedure
         if accumulation_mode is not None and len(accumulated_selection_imgA) > 0:
@@ -886,32 +983,66 @@ def main(args):
                                                                     filenames_and_scoresB)
 
 
-        # create dataloader adding psedolabels to source dataset
-        dataset_A_name = cfg.DATASETS.TRAIN_NAME + '_A_' + str(epoch)
-        built_custom_dataset(cfg, cfg.DATASETS.TRAIN_IMG_TXT, cfg.DATASETS.TRAIN_GT_TXT, 
-                                               dataset_A_name, True, accumulated_selection_imgA, accumulated_selection_pseudoA)
-        # Train model A
-        logger.info("Training Model A")
-        results_A = do_train(cfg, model, args.weights_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, incremental_training=args.incremental_training, resume=False)
+        if cfg.SOLVER.ALTERNATE_SOURCE_PSEUDOLABELS:
+            # create one dataloader for the source data and another for target pseudolabels 
+            dataset_A_source = cfg.DATASETS.TRAIN_NAME + '_A_source' + str(epoch)
+            dataset_A_target = cfg.DATASETS.TRAIN_NAME + '_A_target' + str(epoch)
+            built_custom_dataset(cfg, cfg.DATASETS.TRAIN_IMG_TXT, cfg.DATASETS.TRAIN_GT_TXT, dataset_A_source)
+            built_custom_dataset(cfg, accumulated_selection_imgA, accumulated_selection_pseudoA, dataset_A_target)
+            # Train model A
+            logger.info("Training Model A")
+            results_A = do_train(cfg, model, args.weights_branchA, dataset_A_source, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
+                                 incremental_training=args.incremental_training, resume=False, dataset_pseudolabels=dataset_A_target)
 
-        # create dataloader adding psedolabels to source dataset
-        dataset_B_name = cfg.DATASETS.TRAIN_NAME + '_B_' + str(epoch)
-        built_custom_dataset(cfg, cfg.DATASETS.TRAIN_IMG_TXT, cfg.DATASETS.TRAIN_GT_TXT, 
-                                               dataset_B_name, True, accumulated_selection_imgB, accumulated_selection_pseudoB)
+            # create dataloader adding psedolabels to source dataset
+            dataset_B_source = cfg.DATASETS.TRAIN_NAME + '_B_source' + str(epoch)
+            dataset_B_target = cfg.DATASETS.TRAIN_NAME + '_B_target' + str(epoch)
+            built_custom_dataset(cfg, cfg.DATASETS.TRAIN_IMG_TXT, cfg.DATASETS.TRAIN_GT_TXT, dataset_B_source)
+            built_custom_dataset(cfg, accumulated_selection_imgB, accumulated_selection_pseudoB, dataset_B_target)
 
-        # Train model B
-        logger.info("Training Model B")
-        results_B = do_train(cfg, model, args.weights_branchB, dataset_B_name, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, incremental_training=args.incremental_training, resume=False)
+            # Train model B
+            logger.info("Training Model B")
+            results_B = do_train(cfg, model, args.weights_branchB, dataset_B_source, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, 
+                                 incremental_training=args.incremental_training, resume=False, dataset_pseudolabels=dataset_B_target )
 
-        # delete all datasets registered during epoch
+            DatasetCatalog.remove(dataset_A_source)
+            MetadataCatalog.remove(dataset_A_source)
+            DatasetCatalog.remove(dataset_A_target)
+            MetadataCatalog.remove(dataset_A_target)
+            DatasetCatalog.remove(dataset_B_source)
+            MetadataCatalog.remove(dataset_B_source)
+            DatasetCatalog.remove(dataset_B_target)
+            MetadataCatalog.remove(dataset_B_target)
+        else:
+            # create dataloader adding psedolabels to source dataset
+            dataset_A_name = cfg.DATASETS.TRAIN_NAME + '_A_' + str(epoch)
+            built_custom_dataset(cfg, cfg.DATASETS.TRAIN_IMG_TXT, cfg.DATASETS.TRAIN_GT_TXT, 
+                                                   dataset_A_name, True, accumulated_selection_imgA, accumulated_selection_pseudoA)
+            # Train model A
+            logger.info("Training Model A")
+            results_A = do_train(cfg, model, args.weights_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
+                                 incremental_training=args.incremental_training, resume=False)
+
+            # create dataloader adding psedolabels to source dataset
+            dataset_B_name = cfg.DATASETS.TRAIN_NAME + '_B_' + str(epoch)
+            built_custom_dataset(cfg, cfg.DATASETS.TRAIN_IMG_TXT, cfg.DATASETS.TRAIN_GT_TXT, 
+                                                   dataset_B_name, True, accumulated_selection_imgB, accumulated_selection_pseudoB)
+
+            # Train model B
+            logger.info("Training Model B")
+            results_B = do_train(cfg, model, args.weights_branchB, dataset_B_name, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, 
+                                 incremental_training=args.incremental_training, resume=False)
+
+            # delete all datasets registered during epoch
+            DatasetCatalog.remove(dataset_A_name)
+            MetadataCatalog.remove(dataset_A_name)
+            DatasetCatalog.remove(dataset_B_name)
+            MetadataCatalog.remove(dataset_B_name)
+
         DatasetCatalog.remove(args.unlabeled_dataset_A_name)
         MetadataCatalog.remove(args.unlabeled_dataset_A_name)
         DatasetCatalog.remove(args.unlabeled_dataset_B_name)
         MetadataCatalog.remove(args.unlabeled_dataset_B_name)
-        DatasetCatalog.remove(dataset_A_name)
-        MetadataCatalog.remove(dataset_A_name)
-        DatasetCatalog.remove(dataset_B_name)
-        MetadataCatalog.remove(dataset_B_name)
 
         # refresh weight file pointers after iteration for initial inference if there is improvement
         for score, iteration in results_A:
