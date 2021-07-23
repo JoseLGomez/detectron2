@@ -35,7 +35,8 @@ class SemanticSegmentor(nn.Module):
     def __init__(
         self,
         *,
-        backbone: Backbone,
+        #backbone: Backbone,
+        backbone,
         sem_seg_head: nn.Module,
         pixel_mean: Tuple[float],
         pixel_std: Tuple[float],
@@ -254,11 +255,9 @@ class SemSegFPNHead(nn.Module):
             predictions, scale_factor=self.common_stride, mode="bilinear", align_corners=False
         )
         if masks is not None:
-            for idx, prediction in enumerate(predictions):
+            for idx in range(len(predictions)):
                 aux_mask = masks[idx].unsqueeze(0).expand(predictions[idx].size())
-                predictions[idx] = prediction * aux_mask
-                #print(predictions[idx])
-                #print(torch.unique(masks[idx], return_counts=True))
+                predictions[idx] = predictions[idx] * aux_mask
         loss = F.cross_entropy(
             predictions, targets, reduction="mean", ignore_index=self.ignore_value
         )

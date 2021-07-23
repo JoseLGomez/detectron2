@@ -347,9 +347,9 @@ class DeepLabV3Head(nn.Module):
             predictions, scale_factor=self.common_stride, mode="bilinear", align_corners=False
         )
         if masks is not None:
-            for idx, prediction in enumerate(predictions):
+            for idx in range(len(predictions)):
                 aux_mask = masks[idx].unsqueeze(0).expand(predictions[idx].size())
-                predictions[idx] = prediction * aux_mask
+                predictions[idx] = predictions[idx] * aux_mask
         loss = self.loss(predictions, targets)
         losses = {"loss_sem_seg": loss * self.loss_weight}
         return losses

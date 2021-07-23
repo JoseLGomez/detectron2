@@ -110,6 +110,7 @@ _C.DATASETS.TEST_GT_TXT = None
 _C.DATASETS.TRAIN_NAME = "custom"
 _C.DATASETS.TEST_NAME = "custom"
 _C.DATASETS.LABELS = None
+_C.DATASETS.TRAIN_SAMPLES = None
 
 # -----------------------------------------------------------------------------
 # DataLoader
@@ -416,6 +417,13 @@ _C.MODEL.PANOPTIC_FPN.COMBINE.OVERLAP_THRESH = 0.5
 _C.MODEL.PANOPTIC_FPN.COMBINE.STUFF_AREA_LIMIT = 4096
 _C.MODEL.PANOPTIC_FPN.COMBINE.INSTANCES_CONFIDENCE_THRESH = 0.5
 
+# SegFormer
+_C.MODEL.SEM_SEG_HEAD.IN_CHANNELS = [32, 64, 160, 256]
+_C.MODEL.SEM_SEG_HEAD.IN_INDEX = [0, 1, 2, 3]
+_C.MODEL.SEM_SEG_HEAD.FEATURE_STRIDES = [4, 8, 16, 32]
+_C.MODEL.SEM_SEG_HEAD.CHANNELS = 128
+_C.MODEL.SEM_SEG_HEAD.DROPOUT_RATIO = 0.1
+#_C.MODEL.SEM_SEG_HEAD.DECODER_PARAMS = {'embed_dim': 768}
 
 # ---------------------------------------------------------------------------- #
 # RetinaNet Head

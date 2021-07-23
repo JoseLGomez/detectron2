@@ -2,8 +2,12 @@ import torch.nn as nn
 import math
 import torch.utils.model_zoo as model_zoo
 import torch
+from torch.nn import functional as F
 import numpy as np
-from detectron2.modeling import BACKBONE_REGISTRY
+from ..backbone import (Backbone, BACKBONE_REGISTRY) 
+from ..meta_arch import SEM_SEG_HEADS_REGISTRY
+from detectron2.layers import ShapeSpec
+
 
 
 affine_par = True
@@ -206,10 +210,11 @@ class ResNet_Refine(nn.Module):
 
         return x     
 
-class ResNet(nn.Module):
+class ResNet(Backbone):
     def __init__(self, block, layers, num_classes):
         self.inplanes = 64
         super(ResNet, self).__init__()
+        self._out_features = 'layer4'
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
         self.bn1 = nn.BatchNorm2d(64, affine = affine_par)
@@ -221,7 +226,7 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=1, dilation=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=1, dilation=4)
-        self.layer5 = self._make_pred_layer(Classifier_Module, [6,12,18,24],[6,12,18,24],num_classes)
+        #self.layer5 = self._make_pred_layer(Classifier_Module, [6,12,18,24],[6,12,18,24],num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -261,9 +266,12 @@ class ResNet(nn.Module):
         x = self.layer2(x)
         x = self.layer3(x)
         x = self.layer4(x)
-        x = self.layer5(x)
+        #x = self.layer5(x)
 
         return x
+
+    def output_shape(self):
+        return {"layer4": ShapeSpec(channels=512, stride=1)}
 
 class MS_Deeplab(nn.Module):
     def __init__(self,block,num_classes):
@@ -292,11 +300,59 @@ def Res_Ms_Deeplab(num_classes=21):
     model = MS_Deeplab(Bottleneck, num_classes)
     return model
 
-@SEM_SEG_HEADS_REGISTRY.register()
-def Res_Deeplab(num_classes=21, is_refine=False):
-    if is_refine:
-        model = ResNet_Refine(Bottleneck,[3, 4, 23, 3], num_classes)
-    else:
-        model = ResNet(Bottleneck,[3, 4, 23, 3], num_classes)
+@BACKBONE_REGISTRY.register()
+def res_deeplab(num_classes=21, is_refine=False):
+    model = ResNet(Bottleneck,[3, 4, 23, 3], num_classes)
     return model
 
+@SEM_SEG_HEADS_REGISTRY.register()
+class DeepLabV2Head(nn.Module):
+    """
+    A semantic segmentation head described in :paper:`DeepLabV3`.
+    """
+
+    def __init__(self, cfg, input_shape):
+        super().__init__()
+        self.ignore_value = cfg.MODEL.SEM_SEG_HEAD.IGNORE_VALUE
+        self.loss_weight = cfg.MODEL.SEM_SEG_HEAD.LOSS_WEIGHT
+        num_classes = cfg.MODEL.SEM_SEG_HEAD.NUM_CLASSES
+        input_size_train = cfg.INPUT.CROP.SIZE
+        input_size_test = (cfg.INPUT.MIN_SIZE_TEST, cfg.INPUT.MAX_SIZE_TEST)
+        self.layer5 = self._make_pred_layer(Classifier_Module, [6,12,18,24],[6,12,18,24],num_classes)
+        self.interp_train = nn.Upsample(size=input_size_train, mode='bilinear', align_corners=True)
+        self.interp_test = nn.Upsample(size=input_size_test, mode='bilinear', align_corners=True)
+
+
+    def forward(self, x, targets=None, masks=None):
+        x = self.layer5(x)
+        if self.training:
+            x = self.interp_train(x)
+            if masks is not None:
+                return None, self.losses(x, targets, masks)
+            else:
+                return None, self.losses(x, targets)
+        else:
+            x = self.interp_test(x)
+            '''x = F.interpolate(
+                x, scale_factor=self.common_stride, mode="bilinear", align_corners=False
+            )'''
+            return x, {}
+
+
+    def _make_pred_layer(self,block, dilation_series, padding_series,num_classes):
+        return block(dilation_series,padding_series,num_classes)
+
+    def losses(self, predictions, targets, masks=None):
+        predictions = predictions.float()  # https://github.com/pytorch/pytorch/issues/48163
+        '''predictions = F.interpolate(
+            predictions, scale_factor=self.common_stride, mode="bilinear", align_corners=False
+        )'''
+        if masks is not None:
+            for idx in range(len(predictions)):
+                aux_mask = masks[idx].unsqueeze(0).expand(predictions[idx].size())
+                predictions[idx] = predictions[idx] * aux_mask
+        loss = F.cross_entropy(
+            predictions, targets, reduction="mean", ignore_index=self.ignore_value
+        )
+        losses = {"loss_sem_seg": loss * self.loss_weight}
+        return losses

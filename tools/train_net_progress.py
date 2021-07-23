@@ -230,7 +230,7 @@ def do_train(cfg, model, resume=False):
     train_dataset_name = built_custom_dataset(cfg, cfg.DATASETS.TRAIN_IMG_TXT, cfg.DATASETS.TRAIN_GT_TXT, '_train')
     test_dataset_name = built_custom_dataset(cfg, cfg.DATASETS.TEST_IMG_TXT, cfg.DATASETS.TEST_GT_TXT, '_test')
     dataset: List[Dict] = DatasetCatalog.get(train_dataset_name)
-    data_loader = build_detection_train_loader(cfg, dataset=dataset, mapper=mapper)
+    data_loader = build_detection_train_loader(cfg, dataset=dataset, mapper=mapper, total_batch_size=cfg.SOLVER.IMS_PER_BATCH)
     logger.info("Starting training from iteration {}".format(start_iter))
     with EventStorage(start_iter) as storage:
         for data, iteration in zip(data_loader, range(start_iter, max_iter)):
@@ -265,7 +265,6 @@ def do_train(cfg, model, resume=False):
             if (
                 cfg.TEST.EVAL_PERIOD > 0
                 and (iteration + 1) % cfg.TEST.EVAL_PERIOD == 0
-                and iteration != max_iter - 1
             ):
                 do_test_txt(cfg, model, test_dataset_name, iteration+1)
                 # Compared to "train_net.py", the test results are not dumped to EventStorage
@@ -313,7 +312,7 @@ def main(args):
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
         test_dataset_name = built_custom_dataset(cfg, cfg.DATASETS.TEST_IMG_TXT, cfg.DATASETS.TEST_GT_TXT, '_test')
-    return do_test_txt(cfg, model, test_dataset_name, 'final')
+        do_test_txt(cfg, model, test_dataset_name, 'final')
 
 
 if __name__ == "__main__":

@@ -1,0 +1,48 @@
+_BASE_: ../Base-DeepLabV2.yaml
+MODEL:
+  META_ARCHITECTURE: "SemanticSegmentor"
+  WEIGHTS: "https://download.pytorch.org/models/resnet101-5d3b4d8f.pth"
+  PIXEL_MEAN: [123.675, 116.280, 103.530]
+  PIXEL_STD: [58.395, 57.120, 57.375]
+  BACKBONE:
+    NAME: "DeepLabV2_backbone"
+  SEM_SEG_HEAD:
+    NAME: "DeepLabV2_head"
+    IGNORE_VALUE: 19
+    NUM_CLASSES: 20
+INPUT:
+  FORMAT: "RGB"
+  MIN_SIZE_TRAIN: (512, 768, 1024, 1280, 1536, 1792, 2048)
+  MIN_SIZE_TRAIN_SAMPLING: "choice"
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TRAIN: 4096
+  MAX_SIZE_TEST: 2048
+  CROP:
+    ENABLED: True
+    TYPE: "absolute"
+    SIZE: (512, 1024)
+    SINGLE_CATEGORY_MAX_AREA: 1.0
+DATASETS:
+  TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_train.txt
+  TRAIN_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_train.txt
+  TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_val.txt
+  TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
+  LABELS: "cityscapes"
+SOLVER:
+  IMS_PER_BATCH: 1
+  LR_SCHEDULER_NAME: "WarmupPolyLR"
+  BASE_LR: 0.002
+  STEPS: (30000, 40000)
+  MAX_ITER: 45000
+  CHECKPOINT_PERIOD: 2500
+TEST:
+  EVAL_PERIOD: 2500
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cityscapes/deeplabV2_bis_debug
+AUGMENTATION:
+  CUTOUT: False
+  CUTOUT_N_HOLES: (0, 1)
+  CUTOUT_LENGTH: (300, 600)
+  RANDOM_RESIZE: False
+  RESIZE_RANGE: (0.5, 1.5)
+  HFLIP: True
+  HFLIP_PROB: 0.5

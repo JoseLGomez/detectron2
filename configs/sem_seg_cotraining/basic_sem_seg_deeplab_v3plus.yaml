@@ -8,15 +8,18 @@ MODEL:
   RESNETS:
     DEPTH: 101
     NORM: "BN"
+    OUT_FEATURES: ["res2", "res5"]
     RES5_MULTI_GRID: [1, 2, 4]
     STEM_TYPE: "deeplab"
     STEM_OUT_CHANNELS: 128
     STRIDE_IN_1X1: False
   SEM_SEG_HEAD:
-    IGNORE_VALUE: 19
-    NUM_CLASSES: 20
-    NAME: "DeepLabV3Head"
+    NAME: "DeepLabV3PlusHead"
+    IN_FEATURES: ["res2", "res5"]
+    PROJECT_FEATURES: ["res2"]
+    PROJECT_CHANNELS: [48]
     NORM: "BN"
+    COMMON_STRIDE: 4
 INPUT:
   FORMAT: "RGB"
   ACTIVATE_MIN_SIZE_TRAIN: True
@@ -31,20 +34,20 @@ INPUT:
     SIZE: (512, 1024)
     SINGLE_CATEGORY_MAX_AREA: 1.0
 DATASETS:
-  TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_subtrain_sup.txt
-  TRAIN_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_subtrain_sup.txt
+  TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_train.txt
+  TRAIN_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_train.txt
   TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_val.txt
   TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
   LABELS: "cityscapes"
 SOLVER:
   IMS_PER_BATCH: 4
   BASE_LR: 0.002
-  STEPS: (30000, 40000)
-  MAX_ITER: 45000
-  CHECKPOINT_PERIOD: 2500
+  STEPS: (60000, 80000)
+  MAX_ITER: 90000
+  CHECKPOINT_PERIOD: 10000
 TEST:
-  EVAL_PERIOD: 2500
-OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cityscapes/debug #baseline_deepLabV3_train270_20c_ignorelabel_V2
+  EVAL_PERIOD: 10000
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_cityscapes/baseline_deepLabV3Plus
 AUGMENTATION:
   CUTOUT: False
   CUTOUT_N_HOLES: (0, 5)

@@ -13,6 +13,8 @@ MODEL:
     STEM_OUT_CHANNELS: 128
     STRIDE_IN_1X1: False
   SEM_SEG_HEAD:
+    IGNORE_VALUE: 19
+    NUM_CLASSES: 20
     NAME: "DeepLabV3Head"
     NORM: "BN"
 INPUT:
@@ -39,16 +41,16 @@ DATASETS:
 SOLVER:
   IMS_PER_BATCH: 4
   BASE_LR: 0.002
-  STEPS: (60000, 80000)
-  MAX_ITER: 90000
-  CHECKPOINT_PERIOD: 5000
+  STEPS: (30000, 40000)
+  MAX_ITER: 45000
+  CHECKPOINT_PERIOD: 2500
 TEST:
-  EVAL_PERIOD: 5000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_deepLabV3_resized_crop_batch4_cutout1
+  EVAL_PERIOD: 2500
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_deepLabV3_resized_crop_batch4_20c_ignorelabel_cutout
 AUGMENTATION:
   CUTOUT: True
-  CUTOUT_N_HOLES: (0, 1)
-  CUTOUT_LENGTH: (300, 600)
+  CUTOUT_N_HOLES: (0, 5)
+  CUTOUT_LENGTH: (100, 300)
   RANDOM_RESIZE: False
   RESIZE_RANGE: (0.5, 1.5)
   HFLIP: True

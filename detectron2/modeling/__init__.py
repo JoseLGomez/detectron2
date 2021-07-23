@@ -12,6 +12,10 @@ from .backbone import (
     build_resnet_backbone,
     make_stage,
 )
+from .custom_models import (
+    res_deeplab, 
+    DeepLabV2Head,
+    )
 from .meta_arch import (
     META_ARCH_REGISTRY,
     SEM_SEG_HEADS_REGISTRY,

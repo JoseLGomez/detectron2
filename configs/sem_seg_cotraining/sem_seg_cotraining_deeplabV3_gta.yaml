@@ -1,21 +1,32 @@
-_BASE_: "../Base-RCNN-FPN.yaml"
+_BASE_: Base-DeepLabV3-OS16-Semantic.yaml
 MODEL:
-  META_ARCHITECTURE: "SemanticSegmentor"
-  WEIGHTS: "detectron2://ImageNetPretrained/MSRA/R-101.pkl"
+  WEIGHTS: "detectron2://DeepLab/R-103.pkl"
+  PIXEL_MEAN: [123.675, 116.280, 103.530]
+  PIXEL_STD: [58.395, 57.120, 57.375]
+  BACKBONE:
+    NAME: "build_resnet_deeplab_backbone"
   RESNETS:
     DEPTH: 101
+    NORM: "BN"
+    RES5_MULTI_GRID: [1, 2, 4]
+    STEM_TYPE: "deeplab"
+    STEM_OUT_CHANNELS: 128
+    STRIDE_IN_1X1: False
   SEM_SEG_HEAD:
+    NAME: "DeepLabV3Head"
+    NORM: "BN"
     IGNORE_VALUE: 19
     NUM_CLASSES: 20
 DATASETS:
-  TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/GTA/gta5_rgb.txt
-  TRAIN_GT_TXT: /datatmp/Datasets/segmentation/GTA/gta5_gt_cityscapes.txt
-  TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_subtrain_val.txt
-  TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_subtrain_val.txt
+  TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/GTA/gta5_rgb_filtered_cbst.txt
+  TRAIN_GT_TXT: /datatmp/Datasets/segmentation/GTA/gta5_gt_filtered_cbst.txt
+  #TRAIN_SAMPLES: 600  # comment this line to use all training samples
+  TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_val.txt
+  TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
   LABELS: "cityscapes"
 PSEUDOLABELING: 
   NUMBER: 150 # number of pseudolabels that will be added to the source dataset
-  MODE: "mpt"
+  MODE: "cbst"
   COLLABORATION: "cotraining"
   ACCUMULATION: "update_best_score"
 INPUT:
@@ -37,13 +48,13 @@ SOLVER:
   ALTERNATE_SOURCE_PSEUDOLABELS: True
   SOURCE_PSEUDOLABELS_BATCH_RATIO: (3, 1) # ratio sum must match IMS_PER_BATCH, 1st values source batch size, second values target batch size
   IMS_PER_BATCH: 4
-  BASE_LR: 0.002
+  BASE_LR: 0.00005
   STEPS: (10000, )
-  MAX_ITER: 5000
-  CHECKPOINT_PERIOD: 2500
+  MAX_ITER: 3000
+  CHECKPOINT_PERIOD: 1000
 TEST:
-  EVAL_PERIOD: 2500
-OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/gta_cotraining_update_score_5k_deepconf_mpt_alternate3_1
+  EVAL_PERIOD: 1000
+OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/gta_cotraining_deeplabV3_upscaling_score_3k_3_1_150_300
 AUGMENTATION_A:
   CUTOUT: False
   CUTOUT_N_HOLES: (0, 1)
