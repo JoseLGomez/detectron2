@@ -31,6 +31,8 @@ _C.MODEL.META_ARCHITECTURE = "GeneralizedRCNN"
 # Path (a file path, or URL like detectron2://.., https://..) to a checkpoint file
 # to be loaded to the model. You can find available models in the model zoo.
 _C.MODEL.WEIGHTS = ""
+_C.MODEL.WEIGHTS_BRANCH_A = ""
+_C.MODEL.WEIGHTS_BRANCH_B = ""
 
 # Values to be used for image normalization (BGR order, since INPUT.FORMAT defaults to BGR).
 # To train on images of different number of channels, just set different mean & std.
@@ -107,10 +109,13 @@ _C.DATASETS.TRAIN_IMG_TXT = None
 _C.DATASETS.TEST_IMG_TXT = None
 _C.DATASETS.TRAIN_GT_TXT = None
 _C.DATASETS.TEST_GT_TXT = None
+_C.DATASETS.UNLABELED_DATASET_A = None
+_C.DATASETS.UNLABELED_DATASET_B = None
 _C.DATASETS.TRAIN_NAME = "custom"
 _C.DATASETS.TEST_NAME = "custom"
 _C.DATASETS.LABELS = None
 _C.DATASETS.TRAIN_SAMPLES = None
+_C.DATASETS.MAX_UNLABELED_SAMPLES = None
 
 # -----------------------------------------------------------------------------
 # DataLoader
@@ -649,6 +654,7 @@ _C.GLOBAL.HACK = 1.0
 _C.PSEUDOLABELING = CN()
 _C.PSEUDOLABELING.MODE = None
 _C.PSEUDOLABELING.COLLABORATION = None
+_C.PSEUDOLABELING.SORTING = None
 _C.PSEUDOLABELING.NUMBER = None
 _C.PSEUDOLABELING.ACCUMULATION = None
 

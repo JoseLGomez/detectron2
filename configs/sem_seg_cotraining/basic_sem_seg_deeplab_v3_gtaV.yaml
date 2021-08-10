@@ -1,6 +1,6 @@
 _BASE_: Base-DeepLabV3-OS16-Semantic.yaml
 MODEL:
-  WEIGHTS: "detectron2://DeepLab/R-103.pkl"
+  WEIGHTS: "/data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_deepLabV3_crop512_batch4_45k_1250_20c_noignorelabel_lr2e-3/model_0007499.pth" #"detectron2://DeepLab/R-103.pkl"
   PIXEL_MEAN: [123.675, 116.280, 103.530]
   PIXEL_STD: [58.395, 57.120, 57.375]
   BACKBONE:
@@ -41,12 +41,12 @@ DATASETS:
 SOLVER:
   IMS_PER_BATCH: 4
   BASE_LR: 0.002
-  STEPS: (30000, 40000)
+  STEPS: (15000, 30000, 40000)
   MAX_ITER: 45000
-  CHECKPOINT_PERIOD: 2500
+  CHECKPOINT_PERIOD: 1250
 TEST:
-  EVAL_PERIOD: 2500
-OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_deepLabV3_resized_crop_batch4_20c_ignorelabel_cutout
+  EVAL_PERIOD: 1250
+OUTPUT_DIR: /data/new/Experiments/jlgomez/detectron2baselines/custom_gta/baseline_deepLabV3_crop512_batch4_45k_1250_20c_noignorelabel_lr2e-3
 AUGMENTATION:
   CUTOUT: True
   CUTOUT_N_HOLES: (0, 5)

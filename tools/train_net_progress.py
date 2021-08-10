@@ -48,6 +48,7 @@ from detectron2.evaluation import (
     LVISEvaluator,
     PascalVOCDetectionEvaluator,
     SemSegEvaluator,
+    SemSegEvaluator_opt2,
     inference_on_dataset,
     print_csv_format,
 )
@@ -88,8 +89,8 @@ def built_custom_dataset(cfg, image_dir, gt_dir, split):
     MetadataCatalog.get(dataset_name).set(
         image_dir=image_dir,
         gt_dir=gt_dir,
-        evaluator_type="generic_sem_seg",
-        ignore_label=255,
+        evaluator_type="generic_sem_seg_opt2",
+        ignore_label=cfg.MODEL.SEM_SEG_HEAD.IGNORE_VALUE,
     )
     return dataset_name
 
@@ -117,7 +118,7 @@ def build_sem_seg_train_aug(cfg):
     return augs
 
 
-def get_evaluator(cfg, dataset_name, output_folder=None):
+def get_evaluator(cfg, dataset_name, data_loader, output_folder=None):
     """
     Create evaluator(s) for a given dataset.
     This uses the special metadata "evaluator_type" associated with each builtin dataset.
@@ -155,7 +156,12 @@ def get_evaluator(cfg, dataset_name, output_folder=None):
     if evaluator_type == "lvis":
         return LVISEvaluator(dataset_name, cfg, True, output_folder)
     if evaluator_type == "generic_sem_seg":
-        return SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder)
+        return SemSegEvaluator(dataset_name, distributed=True, output_dir=output_folder, 
+                                write_outputs=True, ignore_label=cfg.MODEL.SEM_SEG_HEAD.IGNORE_VALUE)
+    if evaluator_type == "generic_sem_seg_opt2":
+        return SemSegEvaluator_opt2(dataset_name, distributed=True, output_dir=output_folder, 
+                                write_outputs=True, ignore_label=cfg.MODEL.SEM_SEG_HEAD.IGNORE_VALUE, 
+                                tgt_num=len(data_loader), logger=logger)
     if len(evaluator_list) == 0:
         raise NotImplementedError(
             "no Evaluator for the dataset {} with the type {}".format(dataset_name, evaluator_type)
@@ -170,7 +176,7 @@ def do_test(cfg, model, step_iter):
     for dataset_name in cfg.DATASETS.TEST:
         data_loader = build_detection_test_loader(cfg, dataset_name)
         evaluator = get_evaluator(
-            cfg, dataset_name, os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name, step_iter)
+            cfg, dataset_name, data_loader, os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name, step_iter)
         )
         results_i = inference_on_dataset(model, data_loader, evaluator)
         results[dataset_name] = results_i
@@ -186,7 +192,7 @@ def do_test_txt(cfg, model, dataset_name, step_iter):
     dataset: List[Dict] = DatasetCatalog.get(dataset_name)
     data_loader = build_detection_test_loader(cfg, dataset_name)
     evaluator = get_evaluator(
-        cfg, dataset_name, os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name, str(step_iter))
+        cfg, dataset_name, data_loader, os.path.join(cfg.OUTPUT_DIR, "inference", dataset_name, str(step_iter))
     )
     results_i = inference_on_dataset(model, data_loader, evaluator)
     results[dataset_name] = results_i
@@ -292,7 +298,6 @@ def setup(args):
     )  # if you don't like any of the default setup, write your own setup code
     return cfg
 
-
 def main(args):
     global test_dataset_name
     cfg = setup(args)
@@ -312,7 +317,8 @@ def main(args):
             cfg.MODEL.WEIGHTS, resume=args.resume
         )
         test_dataset_name = built_custom_dataset(cfg, cfg.DATASETS.TEST_IMG_TXT, cfg.DATASETS.TEST_GT_TXT, '_test')
-        do_test_txt(cfg, model, test_dataset_name, 'final')
+        iteration = cfg.MODEL.WEIGHTS.split('/')[-1].split('.')[0].split('_')[-1]
+        do_test_txt(cfg, model, test_dataset_name, iteration)
 
 
 if __name__ == "__main__":

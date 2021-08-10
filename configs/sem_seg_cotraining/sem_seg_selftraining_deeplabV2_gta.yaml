@@ -1,33 +1,25 @@
-_BASE_: Base-DeepLabV3-OS16-Semantic.yaml
+_BASE_: ../Base-DeepLabV2.yaml
 MODEL:
-  WEIGHTS: "detectron2://DeepLab/R-103.pkl"
+  META_ARCHITECTURE: "SemanticSegmentor"
+  WEIGHTS: "/home/jlgomez/Repositories/detectron2/gta_src_names_adjusted.pth"
   PIXEL_MEAN: [123.675, 116.280, 103.530]
   PIXEL_STD: [58.395, 57.120, 57.375]
   BACKBONE:
-    NAME: "build_resnet_deeplab_backbone"
-  RESNETS:
-    DEPTH: 101
-    NORM: "BN"
-    RES5_MULTI_GRID: [1, 2, 4]
-    STEM_TYPE: "deeplab"
-    STEM_OUT_CHANNELS: 128
-    STRIDE_IN_1X1: False
+    NAME: "res_deeplab"
   SEM_SEG_HEAD:
-    NAME: "DeepLabV3Head"
-    NORM: "BN"
+    NAME: "DeepLabV2Head"
     IGNORE_VALUE: 19
-    NUM_CLASSES: 20
+    NUM_CLASSES: 19
 DATASETS:
   TRAIN_IMG_TXT: /datatmp/Datasets/segmentation/GTA/gta5_rgb_filtered_cbst.txt
   TRAIN_GT_TXT: /datatmp/Datasets/segmentation/GTA/gta5_gt_filtered_cbst.txt
-  #TRAIN_SAMPLES: 600  # comment this line to use all training samples
+  TRAIN_SAMPLES: 600  # comment this line to use all training samples
   TEST_IMG_TXT: /datatmp/Datasets/segmentation/cityscapes/leftimage8bit_val.txt
   TEST_GT_TXT: /datatmp/Datasets/segmentation/cityscapes/gtFine_val.txt
   LABELS: "cityscapes"
 PSEUDOLABELING: 
-  NUMBER: 50 # number of pseudolabels that will be added to the source dataset
+  NUMBER: 505 # number of pseudolabels that will be added to the source dataset
   MODE: "cbst"
-  SORTING: "per_class" # 'per_class': sort by num classes on pseudolabel; 'per_void_pixels': sort per num void pixels on pseudolabels; any other value sort by confidence
   COLLABORATION: "none"
   ACCUMULATION: "update_best_score"
 INPUT:
@@ -46,16 +38,17 @@ INPUT:
     SIZE: (512, 1024)
     SINGLE_CATEGORY_MAX_AREA: 1.0
 SOLVER:
-  ALTERNATE_SOURCE_PSEUDOLABELS: True
-  SOURCE_PSEUDOLABELS_BATCH_RATIO: (2, 2) # ratio sum must match IMS_PER_BATCH, 1st values source batch size, second values target batch size
-  IMS_PER_BATCH: 4
-  BASE_LR: 0.002
-  STEPS: (5000, )
-  MAX_ITER: 5000
-  CHECKPOINT_PERIOD: 1000
+  WEIGHT_DECAY: 0.0005
+  ALTERNATE_SOURCE_PSEUDOLABELS: False
+  SOURCE_PSEUDOLABELS_BATCH_RATIO: (3, 1) # ratio sum must match IMS_PER_BATCH, 1st values source batch size, second values target batch size
+  IMS_PER_BATCH: 2
+  BASE_LR: 0.0005
+  STEPS: (10000, )
+  MAX_ITER: 1100
+  CHECKPOINT_PERIOD: 1100
 TEST:
-  EVAL_PERIOD: 1000
-OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/gta_selftraining_deeplabV3_upscaling_score_5k_2_2_50_300_per_class_lr2e-3_scratch_bestmodel_pre65kcut_c20
+  EVAL_PERIOD: 1100
+OUTPUT_DIR: /data/new/Experiments/jlgomez/cotraining_sem_seg/gta_selftraining_deeplabV2_upscaling_weightcutout_sim_cbst_paper_score_1-1k_lr2e-3_V2
 AUGMENTATION_A:
   CUTOUT: False
   CUTOUT_N_HOLES: (0, 1)

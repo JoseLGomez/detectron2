@@ -10,7 +10,6 @@ In order to let one script support training of many models,
 this script contains logic that are specific to these built-in models and therefore
 may not be suitable for your own project.
 For example, your research project perhaps only needs a single "evaluator".
-
 Therefore, we recommend you to use detectron2 as a library and take
 this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
@@ -141,8 +140,13 @@ def cotraining_argument_parser(parser):
         action='store_true'
     )
     parser.add_argument(
-        '--incremental_training',
-        help='Models are not reset in each epoch',
+        '--scratch_training',
+        help='Use pretrained model for training in each epoch',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--best_model',
+        help='Use the best model obtained during the epochs',
         action='store_true'
     )
     parser.add_argument(
@@ -155,6 +159,13 @@ def cotraining_argument_parser(parser):
         help='Initial score to reach to propagate weights to the next epoch',
         default=0,
         type=float
+    )
+    parser.add_argument(
+        '--seed',
+        dest='seed',
+        help='Set a prefixed seed to random select the unlabeled data. Useful to replicate experiments',
+        default=None,
+        type=int
     )
     return parser
 
@@ -362,7 +373,7 @@ def inference_on_imlist(cfg, model, weights, dataset_name):
 
 
 def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_id, save_checkpoints_path, epoch, 
-             continue_epoch, incremental_training=False, resume=False, dataset_pseudolabels=None):
+             continue_epoch, resume=False, dataset_pseudolabels=None):
     model.train()
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
@@ -376,13 +387,7 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_i
                 checkpointer.resume_or_load(weights, resume=resume).get("iteration", -1) + 1
             )
     else:
-        if not incremental_training or continue_epoch == 0:
-            checkpointer.resume_or_load(weights)
-        elif incremental_training:
-            previous_save_checkpoints_path = save_checkpoints_path.split('/')
-            previous_save_checkpoints_path[-2] = str(continue_epoch - 1)
-            weights = os.path.join('/'.join(previous_save_checkpoints_path),'model_final.pth')
-            checkpointer.resume_or_load(weights)
+        checkpointer.resume_or_load(weights)
 
         start_iter = 0
 
@@ -531,10 +536,16 @@ def setup(args):
     add_deeplab_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    if args.unlabeled_dataset_A is not None:
+        cfg.DATASETS.UNLABELED_DATASET_A = args.unlabeled_dataset_A
+    if args.weights_branchA is not None:
+        cfg.MODEL.WEIGHTS_BRANCH_A = args.weights_branchA
+    if args.max_unlabeled_samples is not None:
+        cfg.DATASETS.MAX_UNLABELED_SAMPLES = args.max_unlabeled_samples
     cfg.freeze()
     default_setup(
         cfg, args
-    ) 
+    )
     return cfg
 
 def get_unlabeled_data(unlabeled_dataset, step_inc, seed, samples):
@@ -585,10 +596,13 @@ def compute_kc_thresholds(conf_dict, pred_cls_num, tgt_portion, num_classes):
     return cls_thresh
 
 
-def generate_pseudolabels(outputs, cls_thresh, tgt_num):
+def generate_pseudolabels(outputs, cls_thresh, tgt_num, num_classes):
     pseudolabels = []
     pseudolabels_not_filtered = []
     scores_list = []
+    '''print(tgt_num)
+    print(cls_thresh)
+    exit(-1)'''
     for idx in range(tgt_num):
         pseudolabels_not_filtered.append(outputs[idx][0])
         pseudolabel = outputs[idx][0].copy()
@@ -596,19 +610,25 @@ def generate_pseudolabels(outputs, cls_thresh, tgt_num):
         weighted_conf = np.zeros(pred_conf.shape,dtype=np.float32)
         for idx in range(len(cls_thresh)):
             weighted_conf = weighted_conf + (pred_conf*(pseudolabel == idx)/cls_thresh[idx])
-        pseudolabel[weighted_conf < 1] = 19 # '255' in cityscapes indicates 'unlabaled' for trainIDs
+        pseudolabel[weighted_conf <= 1] = 19 # '255' in cityscapes indicates 'unlabaled' for trainIDs
         pseudolabels.append(pseudolabel)
         #Compute image score using the mean of the weighted confidence pixels values higher than the threshold cls_thresh
-        weighted_conf[weighted_conf < 1] = np.nan
+        classes_id, pixel_count = np.unique(pseudolabel, return_counts=True)
+        weighted_conf[weighted_conf <= 1] = np.nan
         score = np.nanmean(weighted_conf)
-        scores_list.append(score)
+        # create aux array for scores and pixel per class count
+        aux_scores = np.zeros((num_classes+1), dtype=np.float32)
+        aux_scores[-1] = score
+        for idx, class_id in enumerate(classes_id):
+            aux_scores[class_id] = pixel_count[idx]
+        scores_list.append(aux_scores)
     return pseudolabels, scores_list, pseudolabels_not_filtered
 
 
 def apply_cbst(outputs, num_classes, tgt_num, tgt_portion):
     conf_dict, pred_cls_num = prepare_confidence_maps(outputs, num_classes)
     cls_thresh = compute_kc_thresholds(conf_dict, pred_cls_num, tgt_portion, num_classes)
-    pseudolabels, scores_list, pseudolabels_not_filtered = generate_pseudolabels(outputs, cls_thresh, tgt_num)
+    pseudolabels, scores_list, pseudolabels_not_filtered = generate_pseudolabels(outputs, cls_thresh, tgt_num, num_classes)
     return pseudolabels, scores_list, pseudolabels_not_filtered
 
 
@@ -622,7 +642,7 @@ def compute_mtp_thresholds(pred_conf, pred_cls_num, tgt_portion, num_classes):
         x = np.sort(x)
         thres.append(x[np.int(np.round(len(x)*tgt_portion))])
     thres = np.array(thres)
-    thres[thres>0.9]=0.9
+    thres[thres>0.90]=0.90
     return thres
 
 
@@ -680,7 +700,7 @@ def save_pseudolabels(images, pseudolabels, scores, pseudolabels_path, coloured_
                             pred_colour[(pseudolabels_not_filtered[idx] == train_id),2] = label.color[2]
                         Image.fromarray(pred_colour).save(os.path.join(coloured_pseudolabels_not_filtered_path,filename))
                     #Create txt with files names and scores
-                    f.write('%s %s\n' % (filename, str(scores[idx])))
+                    f.write('%s %s %s %s\n' % (filename, str(scores[idx][-1]), str(scores[idx][-2]), str(np.count_nonzero(scores[idx][:19]))))
                     g.write('%s\n' % (image[0]))
                     h.write('%s\n' % (os.path.join(pseudolabels_path,filename)))
     return images_txt, psedolabels_txt, filenames_and_scores
@@ -698,7 +718,7 @@ def merge_txts_and_save(new_txt, txt1, txt2=None):
     return new_txt
 
 def update_best_score_txts_and_save(accum_scores_txt, accum_images_txt, accum_labels_txt, new_scores_txt, 
-                                    new_images_txt, new_labels_txt, save_img_txt, save_labels_txt, save_scores_txt):
+                                    new_images_txt, new_labels_txt, save_img_txt, save_labels_txt, save_scores_txt, sorting_method):
     with open(accum_scores_txt,'r') as f:
         accum_scores = [line.rstrip().split(' ') for line in f.readlines()]
     with open(new_scores_txt,'r') as f:
@@ -715,10 +735,17 @@ def update_best_score_txts_and_save(accum_scores_txt, accum_images_txt, accum_la
     # Check for repeated images
     for idx, score in enumerate(new_scores_txt):
         for idx2, score2 in enumerate(accum_scores):
-            if score[0] == score2[0]: 
-                if score[1] > score2[1]:
+            if score[0] == score2[0]:
+                # Depending of the sorting method we use scores or number of void pixel to update
+                if sorting_method == 'per_class' or sorting_method == 'per_void_pixels':
+                    check = score[2] < score2[2]
+                else:
+                    check = score[1] > score2[1]
+                if check:
                     # If we found the same image with better score we updated values in all the acumulated lists
                     accum_scores[idx2][1] = score[1]
+                    accum_scores[idx2][2] = score[2]
+                    accum_scores[idx2][3] = score[3]
                     accum_labels[idx2] = new_labels[idx]
                 # we store the index to do not add it again later
                 ignore_list.append(idx)
@@ -742,6 +769,19 @@ def update_best_score_txts_and_save(accum_scores_txt, accum_images_txt, accum_la
     new_scores_dataset.close()
     return save_img_txt, save_labels_txt, save_scores_txt
     
+def sorting_scores(scores, sorting_method, selftraining=False):
+    if sorting_method == 'per_class':
+        sorted_idx = np.lexsort((scores[:,20],np.count_nonzero(scores[:,:19], axis=1)))[::-1]
+    elif sorting_method == 'per_void_pixels':
+        # Sorting by number of void pixels (lower to higher)
+        sorted_idx = np.argsort(scores[:,-2])
+    else:
+        # Sorting by confidence (lower to higher for cotraining)
+        sorted_idx = np.argsort(scores[:,-1])
+        if selftraining:
+            # (higher to lower for selftraining)
+            sorted_idx = sorted_idx[::-1][:len(scores_listA)]
+    return sorted_idx
 
 def main(args):
     cfg = setup(args)
@@ -753,7 +793,8 @@ def main(args):
     collaboration = cfg.PSEUDOLABELING.COLLABORATION
     accumulation_mode = cfg.PSEUDOLABELING.ACCUMULATION
     num_selected = cfg.PSEUDOLABELING.NUMBER
-    weights_branchA = args.weights_branchA
+    weights_inference_branchA = cfg.MODEL.WEIGHTS_BRANCH_A
+    weights_train_branchA = cfg.MODEL.WEIGHTS_BRANCH_A
     if pseudolabeling == 'cbst':
         tgt_portion = INIT_TGT_PORT
     # Set initial scores to surpass during an epoch to propagate weghts to the next one
@@ -762,15 +803,22 @@ def main(args):
     # Build test dataset
     built_custom_dataset(cfg, cfg.DATASETS.TEST_IMG_TXT, cfg.DATASETS.TEST_GT_TXT, cfg.DATASETS.TEST_NAME, test=True)
 
+    # set a seed for the unlabeled data selection
+    if args.seed is not None:
+        seed = args.seed
+    else:
+        seed = random.randrange(sys.maxsize)
+
     # Start self-training
     for epoch in range(args.continue_epoch,args.epochs):
         logger.info("Starting training from iteration {}".format(epoch))
         # prepare unlabeled data
         logger.info("prepare unlabeled data")
-        seed = random.randrange(sys.maxsize)
+        seed = seed + epoch
+        logger.info("Seed for unlabeled data {}".format(seed))
         # Read unlabeled data from the txt specified and select randomly X samples defined on max_unlabeled_samples
-        unlabeled_datasetA = get_unlabeled_data(args.unlabeled_dataset_A, args.step_inc, seed, args.max_unlabeled_samples)
-        logger.info("Unlabeled data selected from {}: {}".format(args.unlabeled_dataset_A,len(unlabeled_datasetA)))
+        unlabeled_datasetA = get_unlabeled_data(cfg.DATASETS.UNLABELED_DATASET_A, args.step_inc, seed, cfg.DATASETS.MAX_UNLABELED_SAMPLES)
+        logger.info("Unlabeled data selected from {}: {}".format(cfg.DATASETS.UNLABELED_DATASET_A,len(unlabeled_datasetA)))
         # Regiter unlabeled dataset on detectron 2
         built_inference_dataset(cfg, unlabeled_datasetA, args.unlabeled_dataset_A_name)
         # Compute inference on unlabeled datasets
@@ -778,7 +826,7 @@ def main(args):
         logger.info("Compute inference on unlabeled datasets")
         start_time = time.perf_counter()
         # Inference return a tuple of labels and confidences
-        inference_A = inference_on_imlist(cfg, model, weights_branchA, args.unlabeled_dataset_A_name)
+        inference_A = inference_on_imlist(cfg, model, weights_inference_branchA, args.unlabeled_dataset_A_name)
         total_time = time.perf_counter() - start_time
         logger.info("Compute inference on unlabeled dataset A: {:.2f} s".format(total_time))
         logger.info("Pseudolabeling mode: {}".format(pseudolabeling)) 
@@ -819,8 +867,9 @@ def main(args):
         pseudolabels_A = np.asarray(pseudolabels_A)
         unlabeled_datasetA = np.asarray(unlabeled_datasetA)
         pseudolabels_A_not_filtered = np.asarray(pseudolabels_A_not_filtered)
-        # Order pseudolabels by confidences (scores) higher to lower and select number defined to merge with source data
-        sorted_idx = np.argsort(scores_listA)[::-1][:len(scores_listA)]
+        # Order pseudolabels by method selected on config file
+        logger.info("Sorting mode: {}".format(cfg.PSEUDOLABELING.SORTING))
+        sorted_idx = sorting_scores(scores_listA, cfg.PSEUDOLABELING.SORTING, selftraining=True)
         sorted_scores_listA = scores_listA[sorted_idx]
         sorted_pseudolabels_A = pseudolabels_A[sorted_idx]
         sorted_unlabeled_datasetA = unlabeled_datasetA[sorted_idx]
@@ -865,7 +914,7 @@ def main(args):
                                                 filenames_and_scoresA, images_txt_A, psedolabels_txt_A, 
                                                 os.path.join(dataset_A_path,'dataset_img.txt'), 
                                                 os.path.join(dataset_A_path,'dataset_pseudolabels.txt'),
-                                                os.path.join(dataset_A_path,'filenames_and_scores.txt'))
+                                                os.path.join(dataset_A_path,'filenames_and_scores.txt'), cfg.PSEUDOLABELING.SORTING)
         else:
             #No accumulation, only training with new pseudolabels
             accumulated_selection_imgA = merge_txts_and_save(os.path.join(dataset_A_path,'dataset_img.txt'),
@@ -884,8 +933,8 @@ def main(args):
             built_custom_dataset(cfg, accumulated_selection_imgA, accumulated_selection_pseudoA, dataset_A_target)
             # Train model A
             logger.info("Training Model A")
-            results_A = do_train(cfg, model, args.weights_branchA, dataset_A_source, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
-                                 incremental_training=args.incremental_training, resume=False, dataset_pseudolabels=dataset_A_target)
+            results_A = do_train(cfg, model, weights_train_branchA, dataset_A_source, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
+                                 resume=False, dataset_pseudolabels=dataset_A_target)
 
             DatasetCatalog.remove(dataset_A_source)
             MetadataCatalog.remove(dataset_A_source)
@@ -898,8 +947,8 @@ def main(args):
                                                    dataset_A_name, True, accumulated_selection_imgA, accumulated_selection_pseudoA)
             # Train model A
             logger.info("Training Model A")
-            results_A = do_train(cfg, model, args.weights_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
-                                 incremental_training=args.incremental_training, resume=False)
+            results_A = do_train(cfg, model, weights_train_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
+                                 resume=False)
 
             # delete all datasets registered during epoch
             DatasetCatalog.remove(dataset_A_name)
@@ -909,14 +958,21 @@ def main(args):
         MetadataCatalog.remove(args.unlabeled_dataset_A_name)
 
         # refresh weight file pointers after iteration for initial inference if there is improvement
-
-        if not args.incremental_training:
+        if args.best_model:
+            # Assign best model obtained until now to generate the pseudolabels in the next cycle           
+            # Model only used for inference
             for score, iteration in results_A:
                 if score > best_score_A:
                     best_score_A = score
-                    weights_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints/model_%s.pth' % (str(iteration).zfill(7)))
-            logger.info("Best model A until now: {}".format(weights_branchA))
+                    weights_inference_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints/model_%s.pth' % (str(iteration).zfill(7)))
+                    if not args.scratch_training:
+                        weights_inference_branchA = weights_train_branchA
+            logger.info("Best model A until now: {}".format(weights_inference_branchA))
             logger.info("Best mIoU: {}".format(best_score_A))
+        else:
+            # The model for the next inference and training cycle is the last one obtained
+            weights_train_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints/model_final.pth')
+            weights_inference_branchA = weights_train_branchA
 
 
 if __name__ == "__main__":

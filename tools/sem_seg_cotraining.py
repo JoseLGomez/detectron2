@@ -167,8 +167,13 @@ def cotraining_argument_parser(parser):
         action='store_true'
     )
     parser.add_argument(
-        '--incremental_training',
-        help='Models are not reset in each epoch',
+        '--scratch_training',
+        help='Use pretrained model for training in each epoch',
+        action='store_true'
+    )
+    parser.add_argument(
+        '--best_model',
+        help='Use the best model obtained during the epochs',
         action='store_true'
     )
     parser.add_argument(
@@ -188,6 +193,13 @@ def cotraining_argument_parser(parser):
         help='Initial score to reach to propagate weights to the next epoch',
         default=0,
         type=float
+    )
+    parser.add_argument(
+        '--seed',
+        dest='seed',
+        help='Set a prefixed seed to random select the unlabeled data. Useful to replicate experiments',
+        default=None,
+        type=int
     )
     return parser
 
@@ -390,7 +402,7 @@ def inference_on_imlist(cfg, model, weights, dataset_name):
 
 
 def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_id, save_checkpoints_path, epoch, 
-             continue_epoch, incremental_training=False, resume=False, dataset_pseudolabels=None):
+             continue_epoch, resume=False, dataset_pseudolabels=None):
     model.train()
     optimizer = build_optimizer(cfg, model)
     scheduler = build_lr_scheduler(cfg, optimizer)
@@ -404,13 +416,7 @@ def do_train(cfg, model, weights, train_dataset_name, test_dataset_name, model_i
                 checkpointer.resume_or_load(weights, resume=resume).get("iteration", -1) + 1
             )
     else:
-        if not incremental_training or continue_epoch == 0:
-            checkpointer.resume_or_load(weights)
-        elif incremental_training:
-            previous_save_checkpoints_path = save_checkpoints_path.split('/')
-            previous_save_checkpoints_path[-2] = str(continue_epoch - 1)
-            weights = os.path.join('/'.join(previous_save_checkpoints_path),'model_final.pth')
-            checkpointer.resume_or_load(weights)
+        checkpointer.resume_or_load(weights)
 
         start_iter = 0
 
@@ -559,10 +565,20 @@ def setup(args):
     add_deeplab_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    if args.unlabeled_dataset_A is not None:
+        cfg.DATASETS.UNLABELED_DATASET_A = args.unlabeled_dataset_A
+    if args.unlabeled_dataset_B is not None:
+        cfg.DATASETS.UNLABELED_DATASET_B = args.unlabeled_dataset_B
+    if args.weights_branchA is not None:
+        cfg.MODEL.WEIGHTS_BRANCH_A = args.weights_branchA
+    if args.weights_branchB is not None:
+        cfg.MODEL.WEIGHTS_BRANCH_B = args.weights_branchB
+    if args.max_unlabeled_samples is not None:
+        cfg.DATASETS.MAX_UNLABELED_SAMPLES = args.max_unlabeled_samples 
     cfg.freeze()
     default_setup(
         cfg, args
-    ) 
+    )
     return cfg
 
 def get_unlabeled_data(unlabeled_dataset, step_inc, seed, samples):
@@ -613,7 +629,7 @@ def compute_kc_thresholds(conf_dict, pred_cls_num, tgt_portion, num_classes):
     return cls_thresh
 
 
-def generate_pseudolabels(outputs, cls_thresh, tgt_num):
+def generate_pseudolabels(outputs, cls_thresh, tgt_num, num_classes):
     pseudolabels = []
     pseudolabels_not_filtered = []
     scores_list = []
@@ -627,16 +643,22 @@ def generate_pseudolabels(outputs, cls_thresh, tgt_num):
         pseudolabel[weighted_conf < 1] = 19 # '255' in cityscapes indicates 'unlabaled' for trainIDs
         pseudolabels.append(pseudolabel)
         #Compute image score using the mean of the weighted confidence pixels values higher than the threshold cls_thresh
+        classes_id, pixel_count = np.unique(pseudolabel, return_counts=True)
         weighted_conf[weighted_conf < 1] = np.nan
         score = np.nanmean(weighted_conf)
-        scores_list.append(score)
+        # create aux array for scores and pixel per class count
+        aux_scores = np.zeros((num_classes+1), dtype=np.float32)
+        aux_scores[-1] = score
+        for idx, class_id in enumerate(classes_id):
+            aux_scores[class_id] = pixel_count[idx]
+        scores_list.append(aux_scores)
     return pseudolabels, scores_list, pseudolabels_not_filtered
 
 
 def apply_cbst(outputs, num_classes, tgt_num, tgt_portion):
     conf_dict, pred_cls_num = prepare_confidence_maps(outputs, num_classes)
     cls_thresh = compute_kc_thresholds(conf_dict, pred_cls_num, tgt_portion, num_classes)
-    pseudolabels, scores_list, pseudolabels_not_filtered = generate_pseudolabels(outputs, cls_thresh, tgt_num)
+    pseudolabels, scores_list, pseudolabels_not_filtered = generate_pseudolabels(outputs, cls_thresh, tgt_num, num_classes)
     return pseudolabels, scores_list, pseudolabels_not_filtered
 
 
@@ -650,7 +672,7 @@ def compute_mtp_thresholds(pred_conf, pred_cls_num, tgt_portion, num_classes):
         x = np.sort(x)
         thres.append(x[np.int(np.round(len(x)*tgt_portion))])
     thres = np.array(thres)
-    thres[thres>0.9]=0.9
+    thres[thres>0.95]=0.95
     return thres
 
 
@@ -670,8 +692,8 @@ def apply_mtp(outputs, num_classes, tgt_num, tgt_portion):
         label = pred_cls_num[index].copy()
         prob = pred_conf[index]
         for i in range(num_classes):
-            label[(prob<thres[i])*(label==i)] = 19 # '255' in cityscapes indicates 'unlabaled' for trainIDs
-            prob[(prob<thres[i])*(label==i)] = np.nan
+            label[(prob<=thres[i])*(label==i)] = 19 # '255' in cityscapes indicates 'unlabaled' for trainIDs
+            prob[(prob<=thres[i])*(label==i)] = np.nan
         pseudolabels.append(label)
         score = np.nanmean(prob)
         scores_list.append(score)
@@ -708,7 +730,7 @@ def save_pseudolabels(images, pseudolabels, scores, pseudolabels_path, coloured_
                             pred_colour[(pseudolabels_not_filtered[idx] == train_id),2] = label.color[2]
                         Image.fromarray(pred_colour).save(os.path.join(coloured_pseudolabels_not_filtered_path,filename))
                     #Create txt with files names and scores
-                    f.write('%s %s\n' % (filename, str(scores[idx])))
+                    f.write('%s %s %s %s\n' % (filename, str(scores[idx][-1]), str(scores[idx][-2]), str(np.count_nonzero(scores[idx][:19]))))
                     g.write('%s\n' % (image[0]))
                     h.write('%s\n' % (os.path.join(pseudolabels_path,filename)))
     return images_txt, psedolabels_txt, filenames_and_scores
@@ -726,7 +748,7 @@ def merge_txts_and_save(new_txt, txt1, txt2=None):
     return new_txt
 
 def update_best_score_txts_and_save(accum_scores_txt, accum_images_txt, accum_labels_txt, new_scores_txt, 
-                                    new_images_txt, new_labels_txt, save_img_txt, save_labels_txt, save_scores_txt):
+                                    new_images_txt, new_labels_txt, save_img_txt, save_labels_txt, save_scores_txt, sorting_method):
     with open(accum_scores_txt,'r') as f:
         accum_scores = [line.rstrip().split(' ') for line in f.readlines()]
     with open(new_scores_txt,'r') as f:
@@ -744,9 +766,16 @@ def update_best_score_txts_and_save(accum_scores_txt, accum_images_txt, accum_la
     for idx, score in enumerate(new_scores_txt):
         for idx2, score2 in enumerate(accum_scores):
             if score[0] == score2[0]: 
-                if score[1] > score2[1]:
+                # Depending of the sorting method we use scores or number of void pixel to update
+                if sorting_method == 'per_class' or sorting_method == 'per_void_pixels':
+                    check = score[2] < score2[2]
+                else:
+                    check = score[1] > score2[1]
+                if check:
                     # If we found the same image with better score we updated values in all the acumulated lists
                     accum_scores[idx2][1] = score[1]
+                    accum_scores[idx2][2] = score[2]
+                    accum_scores[idx2][3] = score[3]
                     accum_labels[idx2] = new_labels[idx]
                 # we store the index to do not add it again later
                 ignore_list.append(idx)
@@ -769,6 +798,20 @@ def update_best_score_txts_and_save(accum_scores_txt, accum_images_txt, accum_la
     new_labels_dataset.close()
     new_scores_dataset.close()
     return save_img_txt, save_labels_txt, save_scores_txt
+
+def sorting_scores(scores, sorting_method, selftraining=False):
+    if sorting_method == 'per_class':
+        sorted_idx = np.lexsort((scores[:,20],np.count_nonzero(scores[:,:19], axis=1)))[::-1]
+    elif sorting_method == 'per_void_pixels':
+        # Sorting by number of void pixels (lower to higher)
+        sorted_idx = np.argsort(scores[:,-2])
+    else:
+        # Sorting by confidence (lower to higher for cotraining)
+        sorted_idx = np.argsort(scores[:,-1])
+        if selftraining:
+            # (higher to lower for selftraining)
+            sorted_idx = sorted_idx[::-1][:len(scores_listA)]
+    return sorted_idx
     
 
 def main(args):
@@ -784,8 +827,10 @@ def main(args):
     collaboration = cfg.PSEUDOLABELING.COLLABORATION
     accumulation_mode = cfg.PSEUDOLABELING.ACCUMULATION
     num_selected = cfg.PSEUDOLABELING.NUMBER
-    weights_branchA = args.weights_branchA
-    weights_branchB = args.weights_branchB
+    weights_inference_branchA = cfg.MODEL.WEIGHTS_BRANCH_A
+    weights_train_branchA = cfg.MODEL.WEIGHTS_BRANCH_A
+    weights_inference_branchB = cfg.MODEL.WEIGHTS_BRANCH_B
+    weights_train_branchB = cfg.MODEL.WEIGHTS_BRANCH_B
     if pseudolabeling == 'cbst':
         tgt_portion = INIT_TGT_PORT
     # Set initial scores to surpass during an epoch to propagate weghts to the next one
@@ -795,20 +840,27 @@ def main(args):
     # Build test dataset
     built_custom_dataset(cfg, cfg.DATASETS.TEST_IMG_TXT, cfg.DATASETS.TEST_GT_TXT, cfg.DATASETS.TEST_NAME)
 
+    # set a seed for the unlabeled data selection
+    if args.seed is not None:
+        seed = args.seed
+    else:
+        seed = random.randrange(sys.maxsize)
+
     # Start co-training
     for epoch in range(args.continue_epoch,args.epochs):
         logger.info("Starting training from iteration {}".format(epoch))
         # prepare unlabeled data
         logger.info("prepare unlabeled data")
-        seed = random.randrange(sys.maxsize)
+        seed = seed + epoch
+        logger.info("Seed for unlabeled data {}".format(seed))
         # Read unlabeled data from the txt specified and select randomly X samples defined on max_unlabeled_samples
-        unlabeled_datasetA = get_unlabeled_data(args.unlabeled_dataset_A, args.step_inc, seed, args.max_unlabeled_samples)
-        logger.info("Unlabeled data selected from {}: {}".format(args.unlabeled_dataset_A,len(unlabeled_datasetA)))
+        unlabeled_datasetA = get_unlabeled_data(cfg.DATASETS.UNLABELED_DATASET_A, args.step_inc, seed, cfg.DATASETS.MAX_UNLABELED_SAMPLES)
+        logger.info("Unlabeled data selected from {}: {}".format(cfg.DATASETS.UNLABELED_DATASET_A,len(unlabeled_datasetA)))
         if args.same_domain:
             unlabeled_datasetB = unlabeled_datasetA
         else:    
-            unlabeled_datasetB = get_unlabeled_data(args.unlabeled_dataset_B, args.step_inc, seed, args.max_unlabeled_samples)
-            logger.info("Unlabeled data selected from {}: {}".format(args.unlabeled_dataset_B,len(unlabeled_datasetB)))
+            unlabeled_datasetB = get_unlabeled_data(cfg.DATASETS.UNLABELED_DATASET_B, args.step_inc, seed, cfg.DATASETS.MAX_UNLABELED_SAMPLES)
+            logger.info("Unlabeled data selected from {}: {}".format(cfg.DATASETS.UNLABELED_DATASET_B,len(unlabeled_datasetB)))
         logger.info("Unlabeled data selected from A: {}".format(len(unlabeled_datasetA)))
         logger.info("Unlabeled data selected from B: {}".format(len(unlabeled_datasetB)))
         # Regiter unlabeled dataset on detectron 2
@@ -820,11 +872,11 @@ def main(args):
         logger.info("Compute inference on unlabeled datasets")
         start_time = time.perf_counter()
         # Inference return a tuple of labels and confidences
-        inference_A = inference_on_imlist(cfg, model, weights_branchA, args.unlabeled_dataset_A_name)
+        inference_A = inference_on_imlist(cfg, model, weights_inference_branchA, args.unlabeled_dataset_A_name)
         total_time = time.perf_counter() - start_time
         logger.info("Compute inference on unlabeled dataset A: {:.2f} s".format(total_time))
         start_time = time.perf_counter()
-        inference_B = inference_on_imlist(cfg, model, weights_branchB, args.unlabeled_dataset_B_name)   
+        inference_B = inference_on_imlist(cfg, model, weights_inference_branchB, args.unlabeled_dataset_B_name)   
         total_time = time.perf_counter() - start_time
         logger.info("Compute inference on unlabeled dataset B: {:.2f} s".format(total_time))
         logger.info("Pseudolabeling mode: {}".format(pseudolabeling)) 
@@ -893,47 +945,52 @@ def main(args):
         pseudolabels_B = np.asarray(pseudolabels_B)
         unlabeled_datasetB = np.asarray(unlabeled_datasetB)
         pseudolabels_B_not_filtered = np.asarray(pseudolabels_B_not_filtered)
-        if collaboration.lower() == 'none': #Self-training for each branch
-            # Order pseudolabels by confidences (scores) higher to lower and select number defined to merge with source data
-            sorted_idx = np.argsort(scores_listA)[::-1][:len(scores_listA)]
-            sorted_scores_listA = scores_listA[sorted_idx]
-            sorted_pseudolabels_A = pseudolabels_A[sorted_idx]
-            sorted_unlabeled_datasetA = unlabeled_datasetA[sorted_idx]
-            sorted_pseudolabels_A_not_filtered = pseudolabels_A_not_filtered[sorted_idx]
-            '''scores_listA, pseudolabels_A, unlabeled_datasetA, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listA, pseudolabels_A, 
-                                                                                            unlabeled_datasetA, pseudolabels_A_not_filtered),reverse=True)))'''
-            sorted_idx = np.argsort(scores_listB)[::-1][:len(scores_listB)]
-            sorted_scores_listB = scores_listB[sorted_idx]
-            sorted_pseudolabels_B = pseudolabels_B[sorted_idx]
-            sorted_unlabeled_datasetB = unlabeled_datasetB[sorted_idx]
-            sorted_pseudolabels_B_not_filtered = pseudolabels_B_not_filtered[sorted_idx]
-            '''scores_listB, pseudolabels_B, unlabeled_datasetB, pseudolabels_B_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, 
-                                                                                            unlabeled_datasetB, pseudolabels_B_not_filtered),reverse=True)))'''
-        elif collaboration == 'cotraining':
-            # Order pseudolabels by confidence lower to higher and asign the less n confident to the other model
-            sorted_idx = np.argsort(scores_listB)
-            sorted_scores_listA = scores_listB[sorted_idx]
-            sorted_pseudolabels_A = pseudolabels_B[sorted_idx]
-            sorted_unlabeled_datasetA = unlabeled_datasetA[sorted_idx]
-            sorted_pseudolabels_A_not_filtered = pseudolabels_B_not_filtered[sorted_idx]
-            '''scores_listA, pseudolabels_A, unlabeled_datasetA, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listB, pseudolabels_B, 
-                                                                                            unlabeled_datasetA, pseudolabels_B_not_filtered),reverse=False)))'''
-            sorted_idx = np.argsort(scores_listA)
-            sorted_scores_listB = scores_listA[sorted_idx]
-            sorted_pseudolabels_B = pseudolabels_A[sorted_idx]
-            sorted_unlabeled_datasetB = unlabeled_datasetB[sorted_idx]
-            sorted_pseudolabels_B_not_filtered = pseudolabels_A_not_filtered[sorted_idx]
-            '''scores_listB, pseudolabels_B, unlabeled_datasetB, pseudolabels_A_not_filtered = (list(t) for t in zip(*sorted(zip(scores_listA, pseudolabels_A, 
-                                                                                            unlabeled_datasetB, pseudolabels_A_not_filtered),reverse=False)))'''
-        elif collaboration == 'self+cotraining':
-            # combination of previous methods
-            sorted_idx = np.argsort(scores_listA)[::-1][:len(scores_listA)]
-            sorted_scores_listA = scores_listA[sorted_idx]
-            sorted_pseudolabels_A = pseudolabels_A[sorted_idx]
-            sorted_unlabeled_datasetA = unlabeled_datasetA[sorted_idx]
-            sorted_pseudolabels_A_not_filtered = pseudolabels_A_not_filtered[sorted_idx]
 
-        else:
+        if len(unlabeled_datasetA) < cfg.PSEUDOLABELING.NUMBER:
+            num_selected = len(unlabeled_datasetA)
+
+        logger.info("Sorting mode: {}".format(cfg.PSEUDOLABELING.SORTING))
+        if "self" in collaboration.lower(): #Self-training for each branch
+            # Order pseudolabels by confidences (scores) higher to lower and select number defined to merge with source data
+            sorted_idx = sorting_scores(scores_listA, cfg.PSEUDOLABELING.SORTING, selftraining=True)
+            sorted_scores_listA = scores_listA[sorted_idx][:num_selected]
+            sorted_pseudolabels_A = pseudolabels_A[sorted_idx][:num_selected]
+            sorted_unlabeled_datasetA = unlabeled_datasetA[sorted_idx][:num_selected]
+            sorted_pseudolabels_A_not_filtered = pseudolabels_A_not_filtered[sorted_idx][:num_selected]
+
+            sorted_idx = sorting_scores(scores_listB, cfg.PSEUDOLABELING.SORTING, selftraining=True)
+            sorted_scores_listB = scores_listB[sorted_idx][:num_selected]
+            sorted_pseudolabels_B = pseudolabels_B[sorted_idx][:num_selected]
+            sorted_unlabeled_datasetB = unlabeled_datasetB[sorted_idx][:num_selected]
+            sorted_pseudolabels_B_not_filtered = pseudolabels_B_not_filtered[sorted_idx][:num_selected]
+
+        if "cotraining" in collaboration.lower():
+            if "self" in collaboration.lower():
+                # Order pseudolabels by confidence lower to higher and asign the less n confident to the other model
+                sorted_idx = sorting_scores(scores_listB, cfg.PSEUDOLABELING.SORTING)
+                sorted_scores_listA = np.concatenate((sorted_scores_listA[:int(num_selected/2)], scores_listB[sorted_idx][:int(num_selected/2)]), axis=0)
+                sorted_pseudolabels_A = np.concatenate((sorted_pseudolabels_A[:int(num_selected/2)], pseudolabels_B[sorted_idx][:int(num_selected/2)]), axis=0)
+                sorted_unlabeled_datasetA = np.concatenate((sorted_unlabeled_datasetA[:int(num_selected/2)], unlabeled_datasetA[sorted_idx][:int(num_selected/2)]), axis=0)
+                sorted_pseudolabels_A_not_filtered = np.concatenate((sorted_pseudolabels_A_not_filtered[:int(num_selected/2)], pseudolabels_B_not_filtered[sorted_idx][:int(num_selected/2)]), axis=0)
+                sorted_idx = sorting_scores(scores_listA, cfg.PSEUDOLABELING.SORTING)
+                sorted_scores_listB = np.concatenate((sorted_scores_listB[:int(num_selected/2)], scores_listA[sorted_idx][:int(num_selected/2)]), axis=0)
+                sorted_pseudolabels_B = np.concatenate((sorted_pseudolabels_B[:int(num_selected/2)], pseudolabels_A[sorted_idx][:int(num_selected/2)]), axis=0)
+                sorted_unlabeled_datasetB = np.concatenate((sorted_unlabeled_datasetB[:int(num_selected/2)], unlabeled_datasetB[sorted_idx][:int(num_selected/2)]), axis=0)
+                sorted_pseudolabels_B_not_filtered = np.concatenate((sorted_pseudolabels_B_not_filtered[:int(num_selected/2)], pseudolabels_A_not_filtered[sorted_idx][:int(num_selected/2)]), axis=0)
+            else:
+                # Order pseudolabels by confidence lower to higher and asign the less n confident to the other model
+                sorted_idx = sorting_scores(scores_listB, cfg.PSEUDOLABELING.SORTING)
+                sorted_scores_listA = scores_listB[sorted_idx][:num_selected]
+                sorted_pseudolabels_A = pseudolabels_B[sorted_idx][:num_selected]
+                sorted_unlabeled_datasetA = unlabeled_datasetA[sorted_idx][:num_selected]
+                sorted_pseudolabels_A_not_filtered = pseudolabels_B_not_filtered[sorted_idx][:num_selected]
+                sorted_idx = sorting_scores(scores_listA, cfg.PSEUDOLABELING.SORTING)
+                sorted_scores_listB = scores_listA[sorted_idx][:num_selected]
+                sorted_pseudolabels_B = pseudolabels_A[sorted_idx][:num_selected]
+                sorted_unlabeled_datasetB = unlabeled_datasetB[sorted_idx][:num_selected]
+                sorted_pseudolabels_B_not_filtered = pseudolabels_A_not_filtered[sorted_idx][:num_selected]
+
+        if not "self" in collaboration.lower() and not "cotraining" in collaboration.lower():
             raise Exception('unknown collaboration of models defined')
 
         # free memory
@@ -948,16 +1005,11 @@ def main(args):
         gc.collect()
 
         # select candidates and save them to add them to the source data
-        if len(sorted_unlabeled_datasetA) > cfg.PSEUDOLABELING.NUMBER:
-            images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(sorted_unlabeled_datasetA[:num_selected], sorted_pseudolabels_A[:num_selected], sorted_scores_listA[:num_selected], 
-                pseudolabels_path_model_A, coloured_pseudolabels_path_model_A, sorted_pseudolabels_A_not_filtered[:num_selected], coloured_pseudolabels_not_filtered_path_model_A)
-            images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(sorted_unlabeled_datasetB[:num_selected], sorted_pseudolabels_B[:num_selected], sorted_scores_listB[:num_selected], 
-                pseudolabels_path_model_B, coloured_pseudolabels_path_model_B, sorted_pseudolabels_B_not_filtered[:num_selected], coloured_pseudolabels_not_filtered_path_model_B)      
-        else:
-            images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(sorted_unlabeled_datasetA, sorted_pseudolabels_A, sorted_scores_listA, pseudolabels_path_model_A, 
-                coloured_pseudolabels_path_model_A, sorted_pseudolabels_A_not_filtered, coloured_pseudolabels_not_filtered_path_model_A)
-            images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(sorted_unlabeled_datasetB, sorted_pseudolabels_B, sorted_scores_listB, pseudolabels_path_model_B, 
-                coloured_pseudolabels_path_model_B, sorted_pseudolabels_B_not_filtered, coloured_pseudolabels_not_filtered_path_model_B)
+        images_txt_A, psedolabels_txt_A, filenames_and_scoresA = save_pseudolabels(sorted_unlabeled_datasetA, sorted_pseudolabels_A, sorted_scores_listA, pseudolabels_path_model_A, 
+            coloured_pseudolabels_path_model_A, sorted_pseudolabels_A_not_filtered, coloured_pseudolabels_not_filtered_path_model_A)
+        images_txt_B, psedolabels_txt_B, filenames_and_scoresB = save_pseudolabels(sorted_unlabeled_datasetB, sorted_pseudolabels_B, sorted_scores_listB, pseudolabels_path_model_B, 
+            coloured_pseudolabels_path_model_B, sorted_pseudolabels_B_not_filtered, coloured_pseudolabels_not_filtered_path_model_B)
+        exit(-1)
 
         # free memory
         del sorted_unlabeled_datasetA
@@ -991,13 +1043,13 @@ def main(args):
                                                 filenames_and_scoresA, images_txt_A, psedolabels_txt_A, 
                                                 os.path.join(dataset_A_path,'dataset_img.txt'), 
                                                 os.path.join(dataset_A_path,'dataset_pseudolabels.txt'),
-                                                os.path.join(dataset_A_path,'filenames_and_scores.txt'))
+                                                os.path.join(dataset_A_path,'filenames_and_scores.txt'), cfg.PSEUDOLABELING.SORTING)
                 accumulated_selection_imgB, accumulated_selection_pseudoB, accumulated_scores_B = update_best_score_txts_and_save(
                                                 accumulated_scores_B, accumulated_selection_imgB, accumulated_selection_pseudoB, 
                                                 filenames_and_scoresB, images_txt_B, psedolabels_txt_B, 
                                                 os.path.join(dataset_B_path,'dataset_img.txt'), 
                                                 os.path.join(dataset_B_path,'dataset_pseudolabels.txt'),
-                                                os.path.join(dataset_B_path,'filenames_and_scores.txt'))
+                                                os.path.join(dataset_B_path,'filenames_and_scores.txt'), cfg.PSEUDOLABELING.SORTING)
         else:
             #No accumulation, only training with new pseudolabels
             accumulated_selection_imgA = merge_txts_and_save(os.path.join(dataset_A_path,'dataset_img.txt'),
@@ -1022,8 +1074,8 @@ def main(args):
             built_custom_dataset(cfg, accumulated_selection_imgA, accumulated_selection_pseudoA, dataset_A_target)
             # Train model A
             logger.info("Training Model A")
-            results_A = do_train(cfg, model, args.weights_branchA, dataset_A_source, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
-                                 incremental_training=args.incremental_training, resume=False, dataset_pseudolabels=dataset_A_target)
+            results_A = do_train(cfg, model, weights_train_branchA, dataset_A_source, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
+                                 resume=False, dataset_pseudolabels=dataset_A_target)
 
             # create dataloader adding psedolabels to source dataset
             dataset_B_source = cfg.DATASETS.TRAIN_NAME + '_B_source' + str(epoch)
@@ -1033,8 +1085,8 @@ def main(args):
 
             # Train model B
             logger.info("Training Model B")
-            results_B = do_train(cfg, model, args.weights_branchB, dataset_B_source, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, 
-                                 incremental_training=args.incremental_training, resume=False, dataset_pseudolabels=dataset_B_target )
+            results_B = do_train(cfg, model, weights_train_branchB, dataset_B_source, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, 
+                                 resume=False, dataset_pseudolabels=dataset_B_target )
 
             DatasetCatalog.remove(dataset_A_source)
             MetadataCatalog.remove(dataset_A_source)
@@ -1051,8 +1103,8 @@ def main(args):
                                                    dataset_A_name, True, accumulated_selection_imgA, accumulated_selection_pseudoA)
             # Train model A
             logger.info("Training Model A")
-            results_A = do_train(cfg, model, args.weights_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
-                                 incremental_training=args.incremental_training, resume=False)
+            results_A = do_train(cfg, model, weights_train_branchA, dataset_A_name, cfg.DATASETS.TEST_NAME,'a', checkpoints_A_path, epoch, args.continue_epoch, 
+                                 resume=False)
 
             # create dataloader adding psedolabels to source dataset
             dataset_B_name = cfg.DATASETS.TRAIN_NAME + '_B_' + str(epoch)
@@ -1061,8 +1113,8 @@ def main(args):
 
             # Train model B
             logger.info("Training Model B")
-            results_B = do_train(cfg, model, args.weights_branchB, dataset_B_name, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, 
-                                 incremental_training=args.incremental_training, resume=False)
+            results_B = do_train(cfg, model, weights_train_branchB, dataset_B_name, cfg.DATASETS.TEST_NAME,'b', checkpoints_B_path, epoch, args.continue_epoch, 
+                                 resume=False)
 
             # delete all datasets registered during epoch
             DatasetCatalog.remove(dataset_A_name)
@@ -1075,20 +1127,32 @@ def main(args):
         DatasetCatalog.remove(args.unlabeled_dataset_B_name)
         MetadataCatalog.remove(args.unlabeled_dataset_B_name)
 
-        if not args.incremental_training:
-            # refresh weight file pointers after iteration for initial inference if there is improvement
+        # refresh weight file pointers after iteration for initial inference if there is improvement
+        if args.best_model:
+            # Assign best model obtained until now to generate the pseudolabels in the next cycle           
+            # Model only used for inference
             for score, iteration in results_A:
                 if score > best_score_A:
                     best_score_A = score
-                    weights_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints/model_%s.pth' % (str(iteration).zfill(7)))
-            logger.info("Best model A until now: {}".format(weights_branchA))
+                    weights_inference_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints/model_%s.pth' % (str(iteration).zfill(7)))
+                    if not args.scratch_training:
+                        weights_inference_branchA = weights_train_branchA
+            logger.info("Best model A until now: {}".format(weights_inference_branchA))
             logger.info("Best mIoU: {}".format(best_score_A))
             for score, iteration in results_B:
                 if score > best_score_B:
                     best_score_B = score
-                    weights_branchB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'checkpoints/model_%s.pth' % (str(iteration).zfill(7)))
-            logger.info("Best model B until now: {}".format(weights_branchB))
+                    weights_inference_branchB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'checkpoints/model_%s.pth' % (str(iteration).zfill(7)))
+                    if not args.scratch_training:
+                        weights_inference_branchB = weights_train_branchB
+            logger.info("Best model B until now: {}".format(weights_inference_branchB))
             logger.info("Best mIoU: {}".format(best_score_B))
+        else:
+            # The model for the next inference and training cycle is the last one obtained
+            weights_train_branchA = os.path.join(cfg.OUTPUT_DIR,'model_A',str(epoch),'checkpoints/model_final.pth')
+            weights_inference_branchA = weights_train_branchA
+            weights_train_branchB = os.path.join(cfg.OUTPUT_DIR,'model_B',str(epoch),'checkpoints/model_final.pth')
+            weights_inference_branchB = weights_train_branchB
 
 
 

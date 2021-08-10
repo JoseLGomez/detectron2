@@ -88,7 +88,7 @@ class SemSegEvaluator(DatasetEvaluator):
         for input, output in zip(inputs, outputs):
             output = output["sem_seg"].argmax(dim=0).to(self._cpu_device)
             pred = np.array(output, dtype=np.uint8)
-            pred64 = np.array(output, dtype=np.int64) # to use it on bitcount for xonf matrix
+            pred64 = np.array(output, dtype=np.int64) # to use it on bitcount for conf matrix
             with PathManager.open(self.input_file_to_gt_file[input["file_name"]], "rb") as f:
                 gt = np.array(Image.open(f), dtype=np.int64)
 
@@ -144,6 +144,7 @@ class SemSegEvaluator(DatasetEvaluator):
             with PathManager.open(file_path, "w") as f:
                 f.write(json.dumps(self._predictions))'''
 
+        print(self._conf_matrix)
         acc = np.full(self._num_classes, np.nan, dtype=np.float)
         iou = np.full(self._num_classes, np.nan, dtype=np.float)
         tp = self._conf_matrix.diagonal()[:-1].astype(np.float)
